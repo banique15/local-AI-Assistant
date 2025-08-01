@@ -1,0 +1,24 @@
+{
+  "name": "local-ai-assistant",
+  "version": "1.0.0",
+  "description": "A lightweight, browser-based AI assistant using Bun and Ollama",
+  "main": "app.js",
+  "scripts": {
+    "start": "bun app.js",
+    "dev": "bun --watch app.js"
+  },
+  "keywords": [
+    "ai",
+    "assistant",
+    "local",
+    "ollama",
+    "bun",
+    "chat",
+    "privacy"
+  ],
+  "author": "Local AI Assistant",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
