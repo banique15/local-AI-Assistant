@@ -53,6 +53,24 @@ db.run(`
   )
 `);
 
+// Drop existing reference_contexts table if it exists
+db.run(`DROP TABLE IF EXISTS reference_contexts`);
+
+// Create table for storing reference contexts without foreign key constraint
+db.run(`
+  CREATE TABLE IF NOT EXISTS reference_contexts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    title TEXT,
+    content TEXT,
+    timestamp INTEGER,
+    is_active INTEGER DEFAULT 1
+  )
+`);
+
+// Log that we've recreated the reference_contexts table
+console.log("Recreated reference_contexts table without foreign key constraint");
+
 console.log(`📦 SQLite database initialized at ${DB_PATH}`);
 
 // Legacy in-memory store (kept for fallback)
@@ -368,6 +386,115 @@ function getUserInfo(sessionId) {
   }
 }
 
+// Reference context management functions
+function getReferenceContexts(sessionId) {
+  try {
+    console.log(`Retrieving reference contexts for session ID: "${sessionId}"`);
+    
+    // Check if the session exists in the database
+    const sessionExists = db.query('SELECT id FROM sessions WHERE id = ?').get(sessionId);
+    console.log(`Session exists in database: ${!!sessionExists}`);
+    
+    // Check if there are any reference contexts in the database
+    const allReferences = db.query('SELECT COUNT(*) as count FROM reference_contexts').get();
+    console.log(`Total reference contexts in database: ${allReferences.count}`);
+    
+    // Try a direct query to get the specific reference we know exists
+    const directReference = db.query('SELECT * FROM reference_contexts WHERE id = 1').all();
+    console.log("Direct query for reference with ID 1:", JSON.stringify(directReference, null, 2));
+    
+    // Try a different approach - get all references and filter in code
+    const allReferencesList = db.query('SELECT * FROM reference_contexts').all();
+    console.log("All references in database (direct query):", JSON.stringify(allReferencesList, null, 2));
+    
+    // Get all reference contexts for this session with detailed logging
+    console.log(`Executing SQL query: SELECT id, title, content, timestamp, is_active FROM reference_contexts WHERE session_id = '${sessionId}' ORDER BY timestamp DESC`);
+    
+    // Get all reference contexts for this session
+    const results = db.query(
+      'SELECT id, title, content, timestamp, is_active FROM reference_contexts WHERE session_id = ? ORDER BY timestamp DESC',
+      [sessionId]
+    ).all();
+    
+    console.log(`Found ${results.length} reference contexts for session ID: "${sessionId}"`);
+    console.log("Raw results from database:", JSON.stringify(results, null, 2));
+    
+    // If the query didn't work, try a manual approach
+    if (results.length === 0 && allReferencesList.length > 0) {
+      console.log("Query returned no results, but references exist. Trying manual filtering...");
+      const filteredResults = allReferencesList.filter(ref => ref.session_id === sessionId);
+      console.log("Manually filtered results:", JSON.stringify(filteredResults, null, 2));
+      
+      if (filteredResults.length > 0) {
+        console.log("Using manually filtered results instead");
+        return filteredResults;
+      }
+    }
+    
+    if (results.length > 0) {
+      console.log(`First reference: ID=${results[0].id}, Title=${results[0].title}`);
+    }
+    
+    return results;
+  } catch (error) {
+    console.error("SQLite error in getReferenceContexts:", error);
+    return [];
+  }
+}
+
+function addReferenceContext(sessionId, title, content) {
+  try {
+    const timestamp = Date.now();
+    
+    console.log(`Adding reference context for session ID: "${sessionId}"`);
+    console.log(`Title: "${title}", Content length: ${content.length} chars`);
+    
+    // Ensure the session exists in the database
+    getOrCreateSession(sessionId);
+    
+    // Insert reference context into database
+    console.log(`Executing SQL: INSERT INTO reference_contexts (session_id, title, content, timestamp, is_active) VALUES ('${sessionId}', '${title}', '...', ${timestamp}, 1)`);
+    
+    const result = db.run(
+      'INSERT INTO reference_contexts (session_id, title, content, timestamp, is_active) VALUES (?, ?, ?, ?, 1)',
+      [sessionId, title, content, timestamp]
+    );
+    
+    console.log(`Added reference context with ID ${result.lastInsertRowid} for session ${sessionId}`);
+    
+    // Verify the reference was added by retrieving it
+    const addedReference = db.query('SELECT * FROM reference_contexts WHERE id = ?').get(result.lastInsertRowid);
+    console.log("Verification - Added reference:", JSON.stringify(addedReference, null, 2));
+    
+    return result.lastInsertRowid;
+  } catch (error) {
+    console.error("SQLite error in addReferenceContext:", error);
+    return null;
+  }
+}
+
+function toggleReferenceContext(id, isActive) {
+  try {
+    // Update reference context active status
+    db.run('UPDATE reference_contexts SET is_active = ? WHERE id = ?', [isActive ? 1 : 0, id]);
+    return true;
+  } catch (error) {
+    console.error("SQLite error in toggleReferenceContext:", error);
+    return false;
+  }
+}
+
+function deleteReferenceContext(id) {
+  try {
+    // Delete reference context
+    db.run('DELETE FROM reference_contexts WHERE id = ?', [id]);
+    return true;
+  } catch (error) {
+    console.error("SQLite error in deleteReferenceContext:", error);
+    return false;
+  }
+}
+
 // Extract potential user information from messages
 function extractUserInfo(sessionId, message) {
   // Simple pattern matching for common personal details
@@ -408,6 +535,8 @@ function formatConversationForSystemPrompt(sessionId, maxMessages = 20) {
 function createSystemPrompt(sessionId, modelName = DEFAULT_MODEL) {
   const conversationHistory = formatConversationForSystemPrompt(sessionId);
   const userInfo = getUserInfo(sessionId);
+  const referenceContexts = getReferenceContexts(sessionId).filter(ctx => ctx.is_active === 1);
+  console.log("Reference contexts for system prompt:", referenceContexts);
   
   // Create user info section if we have any stored information
   let userInfoSection = '';
@@ -419,15 +548,25 @@ function createSystemPrompt(sessionId, modelName = DEFAULT_MODEL) {
     userInfoSection += '\n';
   }
   
+  // Create reference contexts section if we have any active reference contexts
+  let referenceSection = '';
+  if (referenceContexts.length > 0) {
+    referenceSection = 'IMPORTANT REFERENCE INFORMATION YOU MUST USE IN YOUR RESPONSES:\n\n';
+    for (const ctx of referenceContexts) {
+      referenceSection += `[${ctx.title}]\n${ctx.content}\n\n`;
+    }
+    console.log("Added reference section to system prompt:", referenceSection);
+  }
+  
   return `You are a formal, high-context AI assistant who speaks in polished, professional English. Maintain memory of past interactions and always reference relevant historical context when replying. Avoid small talk or filler. Be direct, informative, and structured in responses. If information is missing, request it explicitly.
 
 You are running locally using Ollama with the ${modelName} model.
 
-${userInfoSection}Here is the recent conversation history for context:
+${userInfoSection}${referenceSection}Here is the recent conversation history for context:
 
 ${conversationHistory}
 
-Please respond in a formal, structured, and informative manner, referencing relevant context from previous exchanges when appropriate. Always remember and use the user's name and other personal details when available.`;
+Please respond in a formal, structured, and informative manner, referencing relevant context from previous exchanges when appropriate. Always remember and use the user's name and other personal details when available. When relevant, refer to the reference information provided.`;
 }
 
 // HTML Template
@@ -763,6 +902,206 @@ const htmlTemplate = `<!DOCTYPE html>
             border-color: var(--light-text);
             color: var(--text-color);
         }
+        
+        /* Modal styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        
+        .modal {
+            background: var(--chat-bg);
+            border-radius: 0.75rem;
+            box-shadow: var(--shadow-lg);
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .modal-header {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .modal-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text-color);
+            margin: 0;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--light-text);
+        }
+        
+        .modal-body {
+            padding: 1rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+        
+        .modal-footer {
+            padding: 1rem;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+        }
+        
+        .reference-form {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-help {
+            font-size: 0.75rem;
+            color: var(--light-text);
+            margin-top: 0.5rem;
+            font-style: italic;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        .form-group label {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-color);
+        }
+        
+        .form-control {
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            background: var(--bg-color);
+            color: var(--text-color);
+            font-family: inherit;
+        }
+        
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+        
+        textarea.form-control {
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        .form-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .btn {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-primary {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+        }
+        
+        .btn-primary:hover {
+            background: var(--primary-hover);
+        }
+        
+        .btn-secondary {
+            background: var(--secondary-color);
+            color: var(--text-color);
+            border: none;
+        }
+        
+        .btn-secondary:hover {
+            background: var(--border-color);
+        }
+        
+        .reference-list {
+            margin-top: 1.5rem;
+        }
+        
+        .reference-item {
+            padding: 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            background: var(--bg-color);
+        }
+        
+        .reference-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        
+        .reference-title {
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--text-color);
+            margin: 0;
+        }
+        
+        .reference-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .reference-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            font-size: 0.75rem;
+            color: var(--light-text);
+        }
+        
+        .reference-content {
+            font-size: 0.875rem;
+            color: var(--text-color);
+            white-space: pre-wrap;
+            margin-top: 0.5rem;
+            padding-top: 0.5rem;
+            border-top: 1px dashed var(--border-color);
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        
+        .reference-timestamp {
+            font-size: 0.75rem;
+            color: var(--light-text);
+            margin-top: 0.5rem;
+        }
 
         .system-message {
             text-align: center;
@@ -1051,6 +1390,9 @@ const htmlTemplate = `<!DOCTYPE html>
                         <span class="toggle-text">Memory</span>
                     </label>
                 </div>
+                <button id="reference-btn" class="clear-chat" aria-label="Manage reference contexts">
+                    References
+                </button>
             </div>
             <div id="status-indicator" class="status-indicator">Connecting...</div>
         </header>
@@ -1066,6 +1408,41 @@ const htmlTemplate = `<!DOCTYPE html>
                     <span class="typing-dot"></span>
                     <span class="typing-dot"></span>
                     <span class="typing-dot"></span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Reference Context Modal -->
+        <div id="reference-modal" class="modal-overlay">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3 class="modal-title">Manage Reference Contexts</h3>
+                    <button class="modal-close" id="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form id="reference-form" class="reference-form">
+                        <input type="hidden" id="reference-id" value="">
+                        <div class="form-group">
+                            <label for="reference-title">Title</label>
+                            <input type="text" id="reference-title" class="form-control" placeholder="E.g., Company Information, Product Specs, etc.">
+                        </div>
+                        <div class="form-group">
+                            <label for="reference-content">Content</label>
+                            <textarea id="reference-content" class="form-control" placeholder="Enter the reference information that the AI should use..."></textarea>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" id="reference-submit" class="btn btn-primary">Add Reference</button>
+                            <button type="button" id="reference-cancel" class="btn btn-secondary" style="display: none;">Cancel Edit</button>
+                        </div>
+                        <div class="form-help">References are saved to the database and will be available even after closing the modal.</div>
+                    </form>
+                    
+                    <div id="reference-list" class="reference-list">
+                        <!-- Reference items will be added here dynamically -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="modal-close-btn" class="btn btn-secondary">Close</button>
                 </div>
             </div>
         </div>
@@ -1098,16 +1475,38 @@ const htmlTemplate = `<!DOCTYPE html>
         const modelSelector = document.getElementById('model-selector');
         const memoryToggle = document.getElementById('memory-toggle');
         const typingIndicator = document.getElementById('typing-indicator');
+        const referenceBtn = document.getElementById('reference-btn');
+        const referenceModal = document.getElementById('reference-modal');
+        const modalClose = document.getElementById('modal-close');
+        const modalCloseBtn = document.getElementById('modal-close-btn');
+        const referenceForm = document.getElementById('reference-form');
+        const referenceId = document.getElementById('reference-id');
+        const referenceTitle = document.getElementById('reference-title');
+        const referenceContent = document.getElementById('reference-content');
+        const referenceList = document.getElementById('reference-list');
+        const referenceSubmit = document.getElementById('reference-submit');
+        const referenceCancel = document.getElementById('reference-cancel');
 
+        // Fixed session ID for references
+        const REFERENCE_SESSION_ID = 'fixed_reference_session';
+        
         // Session management
-        let sessionId = localStorage.getItem('sessionId') || generateSessionId();
+        let sessionId = localStorage.getItem('sessionId');
+        if (!sessionId) {
+            sessionId = generateSessionId();
+            console.log("Generated new session ID:", sessionId);
+        } else {
+            console.log("Using existing session ID from localStorage:", sessionId);
+        }
         let messageHistory = JSON.parse(localStorage.getItem('messageHistory_' + sessionId) || '[]');
         let selectedModel = localStorage.getItem('selectedModel') || '';
         let memoryEnabled = localStorage.getItem('memoryEnabled') !== 'false'; // Default to true
 
         // Initialize chat with stored messages
         function initChat() {
+            // Ensure session ID is saved to localStorage
             localStorage.setItem('sessionId', sessionId);
+            console.log("Session ID saved to localStorage:", sessionId);
             
             // Display stored messages
             if (messageHistory.length > 0) {
@@ -1165,6 +1564,63 @@ const htmlTemplate = `<!DOCTYPE html>
             
             // Check connection status
             checkConnectionStatus();
+            
+            // Load reference contexts when the application starts
+            loadReferenceContexts();
+            console.log("Initial session ID:", sessionId);
+            
+            // Reference button click handler
+            referenceBtn.addEventListener('click', function() {
+                console.log("Opening reference modal with session ID:", sessionId);
+                referenceModal.style.display = 'flex';
+                loadReferenceContexts(); // Reload references when modal is opened
+            });
+            
+            // Modal close handlers
+            modalClose.addEventListener('click', function() {
+                referenceModal.style.display = 'none';
+            });
+            
+            modalCloseBtn.addEventListener('click', function() {
+                referenceModal.style.display = 'none';
+            });
+            
+            // Close modal when clicking outside
+            referenceModal.addEventListener('click', function(e) {
+                if (e.target === referenceModal) {
+                    referenceModal.style.display = 'none';
+                }
+            });
+            
+            // Reference form submit handler
+            referenceForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const title = referenceTitle.value.trim();
+                const content = referenceContent.value.trim();
+                const id = referenceId.value;
+                
+                if (!title || !content) {
+                    alert('Please enter both title and content for the reference.');
+                    return;
+                }
+                
+                if (id) {
+                    // Update existing reference
+                    updateReferenceContextUI(id, title, content);
+                } else {
+                    // Add new reference context
+                    addReferenceContextUI(title, content);
+                }
+                
+                // Clear form
+                resetReferenceForm();
+            });
+            
+            // Reference cancel button handler
+            referenceCancel.addEventListener('click', function() {
+                resetReferenceForm();
+            });
         }
 
         // Generate a random session ID
@@ -1221,8 +1677,9 @@ const htmlTemplate = `<!DOCTYPE html>
             if (confirm('Are you sure you want to clear the chat history?')) {
                 messageHistory = [];
                 localStorage.removeItem('messageHistory_' + sessionId);
-                sessionId = generateSessionId();
-                localStorage.setItem('sessionId', sessionId);
+                // Keep the same session ID to maintain references
+                // but clear the messages
+                console.log("Cleared chat history for session ID:", sessionId);
                 chatContainer.innerHTML = '<div class="system-message">Start a conversation with your local AI assistant</div>';
             }
         }
@@ -1409,6 +1866,294 @@ const htmlTemplate = `<!DOCTYPE html>
         // Initialize the chat interface
         initChat();
         
+        // Load reference contexts from server
+        async function loadReferenceContexts() {
+            try {
+                // Use fixed session ID for references
+                console.log("Loading reference contexts using fixed session ID:", REFERENCE_SESSION_ID);
+                
+                const response = await fetch('/api/reference?sessionId=' + REFERENCE_SESSION_ID);
+                console.log("Response status:", response.status);
+                
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status);
+                }
+                
+                const responseText = await response.text();
+                console.log("Raw response text:", responseText);
+                
+                const contexts = JSON.parse(responseText);
+                
+                // Clear reference list
+                referenceList.innerHTML = '';
+                
+                console.log("Loaded reference contexts:", contexts);
+                console.log("Type of contexts:", typeof contexts);
+                console.log("Is array:", Array.isArray(contexts));
+                console.log("Number of references loaded:", contexts.length);
+                
+                // Add reference items
+                if (Array.isArray(contexts)) {
+                    contexts.forEach(ctx => {
+                        console.log("Creating reference item:", ctx);
+                        createReferenceItem(ctx.id, ctx.title, ctx.content, ctx.timestamp, ctx.is_active === 1);
+                    });
+                    
+                    // If no references found, show a message
+                    if (contexts.length === 0) {
+                        referenceList.innerHTML = '<div class="system-message">No references found. Add your first reference above.</div>';
+                    }
+                } else {
+                    console.error("Contexts is not an array:", contexts);
+                    referenceList.innerHTML = '<div class="system-message">Invalid data format received from server.</div>';
+                }
+            } catch (error) {
+                console.error('Error loading reference contexts:', error);
+                // Show error message in reference list
+                referenceList.innerHTML = '<div class="system-message">Failed to load reference contexts. Please try again.</div>';
+            }
+        }
+        
+        // Add reference context to UI and database
+        async function addReferenceContextUI(title, content) {
+            try {
+                console.log("Adding reference with fixed session ID:", REFERENCE_SESSION_ID);
+                console.log("Title:", title);
+                console.log("Content:", content);
+                
+                // Send request to server using fixed session ID
+                const response = await fetch('/api/reference', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        sessionId: REFERENCE_SESSION_ID,
+                        title,
+                        content
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status);
+                }
+                
+                const data = await response.json();
+                console.log("Added reference context:", data, "for fixed session:", REFERENCE_SESSION_ID);
+                
+                // Create reference item
+                createReferenceItem(data.id, title, content, data.timestamp, true);
+                
+                // Show feedback
+                showTemporaryMessage('Reference context added successfully');
+                
+                // Immediately reload references to verify they're being saved
+                await loadReferenceContexts();
+            } catch (error) {
+                console.error('Error adding reference context:', error);
+                alert('Failed to add reference context. Please try again.');
+            }
+        }
+        
+        // Create reference item element
+        function createReferenceItem(id, title, content, timestamp, isActive) {
+            const item = document.createElement('div');
+            item.className = 'reference-item';
+            item.dataset.id = id;
+            
+            const date = new Date(timestamp);
+            const formattedDate = date.toLocaleString();
+            
+            // Create elements instead of using innerHTML to avoid template literal issues
+            const header = document.createElement('div');
+            header.className = 'reference-header';
+            
+            const titleEl = document.createElement('h4');
+            titleEl.className = 'reference-title';
+            titleEl.textContent = title;
+            
+            const actions = document.createElement('div');
+            actions.className = 'reference-actions';
+            
+            const toggleLabel = document.createElement('label');
+            toggleLabel.className = 'reference-toggle';
+            
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'reference-active';
+            checkbox.checked = isActive;
+            
+            const toggleText = document.createElement('span');
+            toggleText.textContent = 'Active';
+            
+            const editBtn = document.createElement('button');
+            editBtn.className = 'btn btn-primary reference-edit';
+            editBtn.textContent = 'Edit';
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'btn btn-secondary reference-delete';
+            deleteBtn.textContent = 'Delete';
+            
+            const contentEl = document.createElement('div');
+            contentEl.className = 'reference-content';
+            contentEl.textContent = content;
+            
+            const timestampEl = document.createElement('div');
+            timestampEl.className = 'reference-timestamp';
+            timestampEl.textContent = 'Added: ' + formattedDate;
+            
+            // Assemble the elements
+            toggleLabel.appendChild(checkbox);
+            toggleLabel.appendChild(toggleText);
+            
+            actions.appendChild(toggleLabel);
+            actions.appendChild(editBtn);
+            actions.appendChild(deleteBtn);
+            
+            header.appendChild(titleEl);
+            header.appendChild(actions);
+            
+            item.appendChild(header);
+            item.appendChild(contentEl);
+            item.appendChild(timestampEl);
+            
+            // Add event listeners
+            const toggleCheckbox = item.querySelector('.reference-active');
+            toggleCheckbox.addEventListener('change', async function() {
+                try {
+                    // Send request to server with fixed session ID
+                    const response = await fetch('/api/reference/toggle', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            id,
+                            isActive: this.checked,
+                            sessionId: REFERENCE_SESSION_ID
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Server error: ' + response.status);
+                    }
+                    
+                    // Show feedback
+                    const status = this.checked ? 'activated' : 'deactivated';
+                    showTemporaryMessage('Reference context ' + status);
+                } catch (error) {
+                    console.error('Error toggling reference context:', error);
+                    alert('Failed to update reference context. Please try again.');
+                    this.checked = !this.checked; // Revert checkbox state
+                }
+            });
+            
+            // Edit button handler
+            const editButton = item.querySelector('.reference-edit');
+            editButton.addEventListener('click', function() {
+                // Populate form with reference data
+                referenceId.value = id;
+                referenceTitle.value = title;
+                referenceContent.value = content;
+                referenceSubmit.textContent = 'Update Reference';
+                referenceCancel.style.display = 'inline-block';
+                
+                // Scroll to form
+                referenceForm.scrollIntoView({ behavior: 'smooth' });
+            });
+            
+            const deleteButton = item.querySelector('.reference-delete');
+            deleteButton.addEventListener('click', async function() {
+                if (confirm('Are you sure you want to delete this reference context?')) {
+                    try {
+                        // Send request to server with fixed session ID
+                        const response = await fetch('/api/reference/delete', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                id,
+                                sessionId: REFERENCE_SESSION_ID
+                            })
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error('Server error: ' + response.status);
+                        }
+                        
+                        // Remove item from UI
+                        item.remove();
+                        
+                        // Show feedback
+                        showTemporaryMessage('Reference context deleted');
+                        
+                        // Reload references to ensure UI is in sync with database
+                        loadReferenceContexts();
+                    } catch (error) {
+                        console.error('Error deleting reference context:', error);
+                        alert('Failed to delete reference context. Please try again.');
+                    }
+                }
+            });
+            
+            // Add to reference list
+            referenceList.appendChild(item);
+            
+            return item;
+        }
+        
+        // Reset reference form
+        function resetReferenceForm() {
+            referenceId.value = '';
+            referenceTitle.value = '';
+            referenceContent.value = '';
+            referenceSubmit.textContent = 'Add Reference';
+            referenceCancel.style.display = 'none';
+        }
+        
+        // Update reference context in UI and database
+        async function updateReferenceContextUI(id, title, content) {
+            try {
+                // Send request to server
+                const response = await fetch('/api/reference/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        id,
+                        title,
+                        content,
+                        sessionId: REFERENCE_SESSION_ID // Add fixed session ID
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status);
+                }
+                
+                // Update item in UI
+                const item = document.querySelector('.reference-item[data-id="' + id + '"]');
+                if (item) {
+                    const titleEl = item.querySelector('.reference-title');
+                    const contentEl = item.querySelector('.reference-content');
+                    
+                    if (titleEl) titleEl.textContent = title;
+                    if (contentEl) contentEl.textContent = content;
+                }
+                
+                // Show feedback
+                showTemporaryMessage('Reference context updated successfully');
+                
+                // Reload references to ensure UI is in sync with database
+                loadReferenceContexts();
+            } catch (error) {
+                console.error('Error updating reference context:', error);
+                alert('Failed to update reference context. Please try again.');
+            }
+        }
+        
         // Check connection status every 30 seconds
         setInterval(checkConnectionStatus, 30000);
     </script>
@@ -1507,6 +2252,8 @@ const server = Bun.serve({
 
 You are running locally using Ollama with the ${model} model.`;
         
+        console.log("System prompt:", systemPrompt);
+        
         // Generate response from Ollama
         const result = await generateResponse(
           message,
@@ -1558,6 +2305,192 @@ You are running locally using Ollama with the ${model} model.`;
         console.error("Error retrieving chat history:", error);
         return new Response(
           JSON.stringify({ error: "Failed to retrieve history" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for managing reference contexts
+    if (url.pathname === "/api/reference" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { sessionId, title, content } = body;
+        
+        if (!sessionId || !title || !content) {
+          return new Response(
+            JSON.stringify({ error: "SessionId, title, and content are required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        console.log("Adding reference context for session:", sessionId, "title:", title);
+        
+        // Add reference context
+        const id = addReferenceContext(sessionId, title, content);
+        
+        if (!id) {
+            return new Response(
+                JSON.stringify({ error: "Failed to add reference context" }),
+                { status: 500, headers: { "Content-Type": "application/json" } }
+            );
+        }
+        
+        return new Response(
+          JSON.stringify({ id, timestamp: Date.now() }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error adding reference context:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to add reference context" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for retrieving reference contexts
+    if (url.pathname === "/api/reference" && req.method === "GET") {
+      try {
+        const sessionId = url.searchParams.get("sessionId");
+        
+        if (!sessionId) {
+          return new Response(
+            JSON.stringify({ error: "SessionId is required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        console.log("Getting reference contexts for session:", sessionId);
+        
+        // Direct database query to check all reference contexts
+        const allReferences = db.query('SELECT * FROM reference_contexts').all();
+        console.log("ALL REFERENCES IN DATABASE:", JSON.stringify(allReferences, null, 2));
+        
+        // Direct database query to check all sessions
+        const allSessions = db.query('SELECT * FROM sessions').all();
+        console.log("ALL SESSIONS IN DATABASE:", JSON.stringify(allSessions, null, 2));
+        
+        // Get reference contexts
+        const contexts = getReferenceContexts(sessionId);
+        console.log("Retrieved reference contexts for API:", contexts, "count:", contexts.length);
+        
+        // Return the contexts array directly, not wrapped in an object
+        return new Response(
+          JSON.stringify(contexts),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error retrieving reference contexts:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to retrieve reference contexts" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for toggling reference context active status
+    if (url.pathname === "/api/reference/toggle" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { id, isActive, sessionId } = body;
+        
+        if (!id) {
+          return new Response(
+            JSON.stringify({ error: "Reference context ID is required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        console.log(`Toggling reference context ID ${id} to ${isActive ? 'active' : 'inactive'} for session ${sessionId || 'unknown'}`);
+        
+        // Toggle reference context
+        const success = toggleReferenceContext(id, isActive);
+        
+        if (success) {
+          return new Response(
+            JSON.stringify({ success: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        } else {
+          return new Response(
+            JSON.stringify({ error: "Failed to toggle reference context" }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      } catch (error) {
+        console.error("Error toggling reference context:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to toggle reference context" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for updating reference context
+    if (url.pathname === "/api/reference/update" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { id, title, content, sessionId } = body;
+        
+        if (!id || !title || !content) {
+          return new Response(
+            JSON.stringify({ error: "ID, title, and content are required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        console.log(`Updating reference context ID ${id} for session ${sessionId || 'unknown'}`);
+        
+        // Update reference context in database
+        db.run('UPDATE reference_contexts SET title = ?, content = ? WHERE id = ?',
+          [title, content, id]);
+        
+        return new Response(
+          JSON.stringify({ success: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error updating reference context:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to update reference context" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for deleting reference context
+    if (url.pathname === "/api/reference/delete" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { id, sessionId } = body;
+        
+        if (!id) {
+          return new Response(
+            JSON.stringify({ error: "Reference context ID is required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        console.log(`Deleting reference context ID ${id} for session ${sessionId || 'unknown'}`);
+        
+        // Delete reference context
+        const success = deleteReferenceContext(id);
+        
+        if (success) {
+          return new Response(
+            JSON.stringify({ success: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        } else {
+          return new Response(
+            JSON.stringify({ error: "Failed to delete reference context" }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      } catch (error) {
+        console.error("Error deleting reference context:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to delete reference context" }),
           { status: 500, headers: { "Content-Type": "application/json" } }
         );
       }
