@@ -41,6 +41,18 @@ db.run(`
   )
 `);
 
+// Create table for storing key user information
+db.run(`
+  CREATE TABLE IF NOT EXISTS user_info (
+    session_id TEXT,
+    key TEXT,
+    value TEXT,
+    timestamp INTEGER,
+    PRIMARY KEY(session_id, key),
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+  )
+`);
+
 console.log(`📦 SQLite database initialized at ${DB_PATH}`);
 
 // Legacy in-memory store (kept for fallback)
@@ -322,27 +334,100 @@ function cleanupOldSessions() {
   }
 }
 
-function formatConversationForSystemPrompt(sessionId, maxMessages = 10) {
+// Store key user information
+function storeUserInfo(sessionId, key, value) {
+  try {
+    const timestamp = Date.now();
+    
+    // Insert or replace user info in database
+    db.run('INSERT OR REPLACE INTO user_info (session_id, key, value, timestamp) VALUES (?, ?, ?, ?)',
+      [sessionId, key, value, timestamp]);
+    
+    console.log(`Stored user info: ${key}=${value} for session ${sessionId}`);
+  } catch (error) {
+    console.error("SQLite error in storeUserInfo:", error);
+  }
+}
+
+// Get user information
+function getUserInfo(sessionId) {
+  try {
+    // Get all user info for this session
+    const userInfo = db.query('SELECT key, value FROM user_info WHERE session_id = ? ORDER BY timestamp').all(sessionId);
+    
+    // Convert to object
+    const infoObject = {};
+    userInfo.forEach(info => {
+      infoObject[info.key] = info.value;
+    });
+    
+    return infoObject;
+  } catch (error) {
+    console.error("SQLite error in getUserInfo:", error);
+    return {};
+  }
+}
+
+// Extract potential user information from messages
+function extractUserInfo(sessionId, message) {
+  // Simple pattern matching for common personal details
+  // Name extraction
+  const namePatterns = [
+    /my name is ([A-Za-z\s]+)/i,
+    /i am ([A-Za-z\s]+)/i,
+    /call me ([A-Za-z\s]+)/i,
+    /i'm ([A-Za-z\s]+)/i
+  ];
+  
+  for (const pattern of namePatterns) {
+    const match = message.match(pattern);
+    if (match && match[1]) {
+      const name = match[1].trim();
+      // Filter out common phrases that aren't actually names
+      const nonNames = ['sorry', 'just', 'not sure', 'wondering', 'curious', 'interested', 'looking'];
+      if (name.length > 1 && !nonNames.some(nonName => name.toLowerCase().includes(nonName))) {
+        storeUserInfo(sessionId, 'name', name);
+        break;
+      }
+    }
+  }
+  
+  // Could add more extractors for other types of information
+  // like location, preferences, etc.
+}
+
+function formatConversationForSystemPrompt(sessionId, maxMessages = 20) {
   const session = getOrCreateSession(sessionId);
   const recentMessages = session.messages.slice(-maxMessages);
   
-  return recentMessages.map(msg => 
+  return recentMessages.map(msg =>
     `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${msg.content}`
   ).join('\n\n');
 }
 
 function createSystemPrompt(sessionId, modelName = DEFAULT_MODEL) {
   const conversationHistory = formatConversationForSystemPrompt(sessionId);
+  const userInfo = getUserInfo(sessionId);
+  
+  // Create user info section if we have any stored information
+  let userInfoSection = '';
+  if (Object.keys(userInfo).length > 0) {
+    userInfoSection = 'Important user information you MUST remember:\n';
+    for (const [key, value] of Object.entries(userInfo)) {
+      userInfoSection += `- User's ${key}: ${value}\n`;
+    }
+    userInfoSection += '\n';
+  }
   
   return `You are a formal, high-context AI assistant who speaks in polished, professional English. Maintain memory of past interactions and always reference relevant historical context when replying. Avoid small talk or filler. Be direct, informative, and structured in responses. If information is missing, request it explicitly.
 
 You are running locally using Ollama with the ${modelName} model.
 
-Here is the recent conversation history for context:
+${userInfoSection}Here is the recent conversation history for context:
 
 ${conversationHistory}
 
-Please respond in a formal, structured, and informative manner, referencing relevant context from previous exchanges when appropriate.`;
+Please respond in a formal, structured, and informative manner, referencing relevant context from previous exchanges when appropriate. Always remember and use the user's name and other personal details when available.`;
 }
 
 // HTML Template
@@ -467,6 +552,60 @@ const htmlTemplate = `<!DOCTYPE html>
             display: flex;
             margin-bottom: 0.5rem;
             animation: messageSlideIn 0.3s ease-out;
+        }
+        
+        .typing-indicator {
+            display: flex;
+            margin-bottom: 0.5rem;
+            animation: messageSlideIn 0.3s ease-out;
+            justify-content: flex-start;
+        }
+        
+        .typing-indicator .message-bubble {
+            background: var(--ai-msg-bg);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-bottom-left-radius: 0.375rem;
+            padding: 0.5rem 1rem;
+        }
+        
+        .typing-dots {
+            display: flex;
+            align-items: center;
+            height: 1.5rem;
+        }
+        
+        .typing-dot {
+            display: inline-block;
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 50%;
+            background-color: var(--light-text);
+            margin: 0 0.1rem;
+            animation: typingAnimation 1.4s infinite ease-in-out;
+        }
+        
+        .typing-dot:nth-child(1) {
+            animation-delay: 0s;
+        }
+        
+        .typing-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        
+        .typing-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        
+        @keyframes typingAnimation {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                opacity: 0.6;
+            }
+            30% {
+                transform: translateY(-0.3rem);
+                opacity: 1;
+            }
         }
 
         @keyframes messageSlideIn {
@@ -920,6 +1059,17 @@ const htmlTemplate = `<!DOCTYPE html>
             <div class="system-message">Start a conversation with your local AI assistant</div>
         </div>
         
+        <!-- Typing indicator (hidden by default) -->
+        <div id="typing-indicator" class="typing-indicator" style="display: none;">
+            <div class="message-bubble">
+                <div class="typing-dots">
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                </div>
+            </div>
+        </div>
+        
         <div class="input-container">
             <div class="input-wrapper">
                 <textarea
@@ -947,6 +1097,7 @@ const htmlTemplate = `<!DOCTYPE html>
         const statusIndicator = document.getElementById('status-indicator');
         const modelSelector = document.getElementById('model-selector');
         const memoryToggle = document.getElementById('memory-toggle');
+        const typingIndicator = document.getElementById('typing-indicator');
 
         // Session management
         let sessionId = localStorage.getItem('sessionId') || generateSessionId();
@@ -1040,6 +1191,23 @@ const htmlTemplate = `<!DOCTYPE html>
             
             // Scroll to bottom
             chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        // Show typing indicator
+        function showTypingIndicator() {
+            // Make typing indicator visible
+            typingIndicator.style.display = 'flex';
+            
+            // Append to chat container
+            chatContainer.appendChild(typingIndicator);
+            
+            // Scroll to bottom
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        // Hide typing indicator
+        function hideTypingIndicator() {
+            typingIndicator.style.display = 'none';
         }
 
         // Save message to history
@@ -1192,6 +1360,9 @@ const htmlTemplate = `<!DOCTYPE html>
             userInput.value = '';
             userInput.style.height = 'auto';
             
+            // Show typing indicator
+            showTypingIndicator();
+            
             try {
                 // Send request to server
                 const response = await fetch('/api/chat', {
@@ -1213,11 +1384,18 @@ const htmlTemplate = `<!DOCTYPE html>
                 
                 const data = await response.json();
                 
+                // Hide typing indicator
+                hideTypingIndicator();
+                
                 // Add AI response to UI and history
                 addMessageToUI('ai', data.response);
                 saveMessage('ai', data.response);
             } catch (error) {
                 console.error('Error:', error);
+                
+                // Hide typing indicator
+                hideTypingIndicator();
+                
                 addMessageToUI('ai', 'Sorry, there was an error processing your request. Please make sure Ollama is running and the selected model is available.');
             } finally {
                 // Re-enable input
@@ -1316,6 +1494,9 @@ const server = Bun.serve({
         
         // Add user message to session
         addMessageToSession(sessionId, "user", message);
+        
+        // Extract and store user information from the message
+        extractUserInfo(sessionId, message);
         
         // Get existing context if available (only if memory is enabled)
         const existingContext = memoryEnabled ? getSessionContext(sessionId) : null;
