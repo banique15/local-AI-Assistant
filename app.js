@@ -1,12 +1,49 @@
 // Local AI Assistant - Single File Bun Application
 // Uses Ollama for local AI processing with a web interface
 
+// Import SQLite from Bun
+import { Database } from 'bun:sqlite';
+
 // Configuration
 const PORT = 3000;
 const OLLAMA_API_URL = "http://localhost:11434/api";
 const DEFAULT_MODEL = "phi"; // Default model if none selected
+const DB_PATH = "chat_memory.sqlite";
 
-// In-memory store for active sessions
+// Initialize SQLite database
+const db = new Database(DB_PATH);
+
+// Create tables if they don't exist
+db.run(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    created_at INTEGER,
+    last_activity INTEGER
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    role TEXT,
+    content TEXT,
+    timestamp INTEGER,
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+  )
+`);
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS contexts (
+    session_id TEXT PRIMARY KEY,
+    context TEXT,
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+  )
+`);
+
+console.log(`📦 SQLite database initialized at ${DB_PATH}`);
+
+// Legacy in-memory store (kept for fallback)
 const sessions = new Map();
 
 // Response cache for frequently asked questions
@@ -110,57 +147,178 @@ async function generateResponse(prompt, context = [], systemPrompt = "", modelNa
   }
 }
 
-// Session Management Functions
+// Session Management Functions with SQLite persistence
 function getOrCreateSession(sessionId) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, {
+  try {
+    const now = Date.now();
+    
+    // Check if session exists
+    const existingSession = db.query('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    
+    if (!existingSession) {
+      // Create new session
+      db.run('INSERT INTO sessions (id, created_at, last_activity) VALUES (?, ?, ?)',
+        [sessionId, now, now]);
+      return {
+        id: sessionId,
+        messages: [],
+        context: null,
+        createdAt: now,
+        lastActivity: now
+      };
+    }
+    
+    // Update last activity
+    db.run('UPDATE sessions SET last_activity = ? WHERE id = ?', [now, sessionId]);
+    
+    // Get messages
+    const messages = db.query('SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp').all(sessionId);
+    
+    // Get context
+    const contextRow = db.query('SELECT context FROM contexts WHERE session_id = ?').get(sessionId);
+    const context = contextRow ? JSON.parse(contextRow.context) : null;
+    
+    return {
+      id: sessionId,
+      messages,
+      context,
+      createdAt: existingSession.created_at,
+      lastActivity: now
+    };
+  } catch (error) {
+    console.error("SQLite error in getOrCreateSession:", error);
+    // Fallback to in-memory if database fails
+    if (!sessions.has(sessionId)) {
+      sessions.set(sessionId, {
+        messages: [],
+        context: null,
+        createdAt: Date.now(),
+        lastActivity: Date.now()
+      });
+    }
+    return sessions.get(sessionId);
+  }
+}
+
+function addMessageToSession(sessionId, role, content) {
+  try {
+    const timestamp = Date.now();
+    
+    // Insert message into database
+    db.run('INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
+      [sessionId, role, content, timestamp]);
+    
+    // Update session last activity
+    db.run('UPDATE sessions SET last_activity = ? WHERE id = ?', [timestamp, sessionId]);
+    
+    // Get updated session
+    const session = getOrCreateSession(sessionId);
+    
+    // Clean up old sessions
+    cleanupOldSessions();
+    
+    return session;
+  } catch (error) {
+    console.error("SQLite error in addMessageToSession:", error);
+    // Fallback to in-memory if database fails
+    const session = sessions.get(sessionId) || {
       messages: [],
       context: null,
       createdAt: Date.now(),
       lastActivity: Date.now()
+    };
+    
+    session.messages.push({
+      role,
+      content,
+      timestamp: Date.now()
     });
+    session.lastActivity = Date.now();
+    sessions.set(sessionId, session);
+    
+    return session;
   }
-  return sessions.get(sessionId);
-}
-
-function addMessageToSession(sessionId, role, content) {
-  const session = getOrCreateSession(sessionId);
-  session.messages.push({
-    role,
-    content,
-    timestamp: Date.now()
-  });
-  session.lastActivity = Date.now();
-  
-  cleanupOldSessions();
-  
-  return session;
 }
 
 function updateSessionContext(sessionId, context) {
-  const session = getOrCreateSession(sessionId);
-  session.context = context;
-  return session;
+  try {
+    // Serialize context to JSON
+    const contextJson = JSON.stringify(context);
+    
+    // Insert or replace context in database
+    db.run('INSERT OR REPLACE INTO contexts (session_id, context) VALUES (?, ?)',
+      [sessionId, contextJson]);
+    
+    // Update session last activity
+    db.run('UPDATE sessions SET last_activity = ? WHERE id = ?', [Date.now(), sessionId]);
+    
+    // Get updated session
+    return getOrCreateSession(sessionId);
+  } catch (error) {
+    console.error("SQLite error in updateSessionContext:", error);
+    // Fallback to in-memory if database fails
+    const session = sessions.get(sessionId);
+    if (session) {
+      session.context = context;
+      session.lastActivity = Date.now();
+    }
+    return session;
+  }
 }
 
 function getSessionHistory(sessionId) {
-  const session = getOrCreateSession(sessionId);
-  return session.messages;
+  try {
+    // Get messages from database
+    const messages = db.query('SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp').all(sessionId);
+    return messages;
+  } catch (error) {
+    console.error("SQLite error in getSessionHistory:", error);
+    // Fallback to in-memory if database fails
+    const session = sessions.get(sessionId);
+    return session ? session.messages : [];
+  }
 }
 
 function getSessionContext(sessionId) {
-  const session = getOrCreateSession(sessionId);
-  return session.context;
+  try {
+    // Get context from database
+    const contextRow = db.query('SELECT context FROM contexts WHERE session_id = ?').get(sessionId);
+    return contextRow ? JSON.parse(contextRow.context) : null;
+  } catch (error) {
+    console.error("SQLite error in getSessionContext:", error);
+    // Fallback to in-memory if database fails
+    const session = sessions.get(sessionId);
+    return session ? session.context : null;
+  }
 }
 
 function cleanupOldSessions() {
-  const now = Date.now();
-  const MAX_SESSION_AGE = 24 * 60 * 60 * 1000; // 24 hours
-  
-  for (const [sessionId, session] of sessions.entries()) {
-    if (now - session.lastActivity > MAX_SESSION_AGE) {
-      sessions.delete(sessionId);
+  try {
+    const now = Date.now();
+    const MAX_SESSION_AGE = 24 * 60 * 60 * 1000; // 24 hours
+    const cutoff = now - MAX_SESSION_AGE;
+    
+    // Get expired sessions
+    const expiredSessions = db.query('SELECT id FROM sessions WHERE last_activity < ?').all(cutoff);
+    
+    // Delete expired sessions and their related data
+    db.transaction(() => {
+      expiredSessions.forEach(session => {
+        const sessionId = session.id;
+        db.run('DELETE FROM messages WHERE session_id = ?', [sessionId]);
+        db.run('DELETE FROM contexts WHERE session_id = ?', [sessionId]);
+        db.run('DELETE FROM sessions WHERE id = ?', [sessionId]);
+      });
+    })();
+    
+    // Also clean up in-memory sessions (fallback)
+    for (const [sessionId, session] of sessions.entries()) {
+      if (now - session.lastActivity > MAX_SESSION_AGE) {
+        sessions.delete(sessionId);
+      }
     }
+  } catch (error) {
+    console.error("SQLite error in cleanupOldSessions:", error);
   }
 }
 
@@ -176,15 +334,15 @@ function formatConversationForSystemPrompt(sessionId, maxMessages = 10) {
 function createSystemPrompt(sessionId, modelName = DEFAULT_MODEL) {
   const conversationHistory = formatConversationForSystemPrompt(sessionId);
   
-  return `You are a helpful AI assistant running locally using Ollama with the ${modelName} model.
-Your goal is to provide helpful, accurate, and concise responses.
-Be friendly and conversational in your tone.
+  return `You are a formal, high-context AI assistant who speaks in polished, professional English. Maintain memory of past interactions and always reference relevant historical context when replying. Avoid small talk or filler. Be direct, informative, and structured in responses. If information is missing, request it explicitly.
+
+You are running locally using Ollama with the ${modelName} model.
 
 Here is the recent conversation history for context:
 
 ${conversationHistory}
 
-Please continue the conversation in a helpful and coherent manner.`;
+Please respond in a formal, structured, and informative manner, referencing relevant context from previous exchanges when appropriate.`;
 }
 
 // HTML Template
@@ -1164,9 +1322,9 @@ const server = Bun.serve({
         
         // Create system prompt with conversation history (only if memory is enabled)
         const systemPrompt = memoryEnabled ? createSystemPrompt(sessionId, model) :
-          `You are a helpful AI assistant running locally using Ollama with the ${model} model.
-Your goal is to provide helpful, accurate, and concise responses.
-Be friendly and conversational in your tone.`;
+          `You are a formal, high-context AI assistant who speaks in polished, professional English. Avoid small talk or filler. Be direct, informative, and structured in responses. If information is missing, request it explicitly.
+
+You are running locally using Ollama with the ${model} model.`;
         
         // Generate response from Ollama
         const result = await generateResponse(
@@ -1234,3 +1392,4 @@ console.log(`🤖 Local AI Assistant running at http://localhost:${PORT}`);
 console.log(`📋 Make sure Ollama is running and you have models installed`);
 console.log(`🔧 To install models: ollama pull <model-name> (e.g., ollama pull phi)`);
 console.log(`🌐 Open your browser and navigate to: http://localhost:${PORT}`);
+console.log(`💾 Conversation memory is persisted in SQLite database: ${DB_PATH}`);

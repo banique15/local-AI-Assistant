@@ -14,11 +14,15 @@
     "ollama",
     "bun",
     "chat",
-    "privacy"
+    "privacy",
+    "sqlite"
   ],
   "author": "Local AI Assistant",
   "license": "MIT",
   "engines": {
     "bun": ">=1.0.0"
+  },
+  "dependencies": {
+    "bun:sqlite": "latest"
   }
 }

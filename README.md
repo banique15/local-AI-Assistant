@@ -8,8 +8,8 @@ A lightweight, browser-based AI assistant that runs entirely on your local machi
 - 🔄 **Model Selection**: Automatically detects and allows switching between installed Ollama models
 - 🧠 **Memory Toggle**: Enable/disable conversation context - choose between contextual or independent responses
 - 🌐 **Web Interface**: Clean, responsive chat interface accessible via localhost
-- 💾 **Conversation Memory**: Maintains context between messages for coherent conversations (when enabled)
-- 📝 **Chat History**: Stores conversation history in browser localStorage
+- 💾 **Persistent Memory**: Server-side SQLite database for conversation history that survives restarts
+- 📝 **Dual Storage**: Client-side localStorage + server-side SQLite for robust persistence
 - ⚡ **Single File**: Entire application in one JavaScript file using Bun
 - 📊 **Real-time Status**: Connection status indicator showing current model, memory status, and Ollama service status
 - 🧹 **Easy Management**: Clear chat history with one click
