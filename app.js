@@ -7,8 +7,9 @@ import { Database } from 'bun:sqlite';
 // Configuration
 const PORT = 3000;
 const OLLAMA_API_URL = "http://localhost:11434/api";
-const DEFAULT_MODEL = "phi"; // Default model if none selected
+const DEFAULT_MODEL = "phi:latest"; // Default model if none selected
 const DB_PATH = "chat_memory.sqlite";
+const REFERENCE_SESSION_ID = "fixed_reference_session"; // Fixed session ID for references
 
 // Initialize SQLite database
 const db = new Database(DB_PATH);
@@ -102,11 +103,19 @@ async function getAvailableModels() {
 // Ollama API Integration
 async function generateResponse(prompt, context = [], systemPrompt = "", modelName = DEFAULT_MODEL) {
   try {
-    // Check if Ollama is available
-    const healthCheck = await fetch(`${OLLAMA_API_URL}/version`, { 
-      method: "GET",
-      signal: AbortSignal.timeout(2000) // 2-second timeout
-    }).catch(() => null);
+    console.log(`Generating response using model: ${modelName}`);
+    
+    // Check if Ollama is available with better error handling
+    let healthCheck;
+    try {
+      healthCheck = await fetch(`${OLLAMA_API_URL}/version`, {
+        method: "GET",
+        signal: AbortSignal.timeout(5000) // 5-second timeout
+      });
+    } catch (connectionError) {
+      console.error("Connection error checking Ollama availability:", connectionError);
+      throw new Error("CONNECTION_REFUSED");
+    }
     
     if (!healthCheck || !healthCheck.ok) {
       throw new Error("Ollama service is not available");
@@ -118,27 +127,156 @@ async function generateResponse(prompt, context = [], systemPrompt = "", modelNa
     if (cachedResponse) {
       return cachedResponse;
     }
+    
+    // Get reference contexts but only use them if the prompt is related
+    const referenceContexts = getReferenceContexts(REFERENCE_SESSION_ID).filter(ctx => ctx.is_active === 1);
+    let enhancedPrompt = prompt;
+    
+    // Check if the prompt is related to any reference contexts
+    if (referenceContexts.length > 0) {
+      const isRelevant = referenceContexts.some(ctx => {
+        const titleWords = ctx.title.toLowerCase().split(' ');
+        const contentWords = ctx.content.toLowerCase().split(' ');
+        const promptLower = prompt.toLowerCase();
+        
+        // Check if prompt mentions the reference title or key content words
+        return titleWords.some(word => word.length > 2 && promptLower.includes(word)) ||
+               contentWords.some(word => word.length > 3 && promptLower.includes(word));
+      });
+      
+      // Only add reference information if the prompt is relevant
+      if (isRelevant) {
+        let referenceSection = "Here is some important reference information:\n\n";
+        for (const ctx of referenceContexts) {
+          referenceSection += `[${ctx.title}]\n${ctx.content}\n\n`;
+        }
+        referenceSection += "Based on the above reference information, please answer: ";
+        
+        // Prepend the reference information to the prompt
+        enhancedPrompt = referenceSection + prompt;
+        console.log("Enhanced prompt with relevant references:", enhancedPrompt);
+      } else {
+        console.log("References available but not relevant to this prompt");
+      }
+    }
 
+    // Check if the model exists before making the generate request
+    try {
+      const modelsResponse = await fetch(`${OLLAMA_API_URL}/tags`, {
+        method: "GET",
+        signal: AbortSignal.timeout(5000)
+      });
+      
+      if (!modelsResponse.ok) {
+        throw new Error(`Failed to fetch models: ${modelsResponse.status}`);
+      }
+      
+      const modelsData = await modelsResponse.json();
+      const availableModels = modelsData.models || [];
+      const modelExists = availableModels.some(m => m.name === modelName);
+      
+      if (!modelExists) {
+        throw new Error(`Model "${modelName}" not found in available models`);
+      }
+      
+      console.log(`Model "${modelName}" is available, proceeding with request`);
+    } catch (modelCheckError) {
+      console.error("Error checking model availability:", modelCheckError);
+      throw new Error(`Model "${modelName}" not found or unavailable: ${modelCheckError.message}`);
+    }
+
+    // Handle model names with special characters
+    let modelToUse = modelName;
+    
+    // If model name contains special characters, try to use a simplified version
+    if (modelName.includes(":")) {
+      const simplifiedName = modelName.split(":")[0];
+      console.log(`Model name contains special characters, will try with simplified name "${simplifiedName}" if needed`);
+      
+      // First try with the original name
+      try {
+        console.log(`Attempting request with original model name: ${modelName}`);
+        const response = await fetch(`${OLLAMA_API_URL}/generate`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: modelName,
+            prompt: enhancedPrompt,
+            system: systemPrompt,
+            context: context,
+            stream: false,
+          }),
+          signal: AbortSignal.timeout(30000) // 30-second timeout for generation
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Ollama API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log(`Successfully received response from model: ${modelName}`);
+        
+        const result = {
+          content: data.response,
+          context: data.context,
+        };
+        
+        // Cache the response
+        responseCache.set(cacheKey, result);
+        
+        // Limit cache size
+        if (responseCache.size > 100) {
+          const oldestKey = responseCache.keys().next().value;
+          responseCache.delete(oldestKey);
+        }
+        
+        return result;
+      } catch (originalModelError) {
+        console.error(`Error with original model name "${modelName}":`, originalModelError);
+        console.log(`Falling back to simplified model name: ${simplifiedName}`);
+        
+        // If original name fails, try with simplified name
+        modelToUse = simplifiedName;
+      }
+    }
+    
+    // If we're here, either we're using a model without special chars,
+    // or we're trying the simplified name as a fallback
+    console.log(`Sending request to Ollama API for model: ${modelToUse}`);
     const response = await fetch(`${OLLAMA_API_URL}/generate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: modelName,
-        prompt: prompt,
+        model: modelToUse,
+        prompt: enhancedPrompt,
         system: systemPrompt,
         context: context,
         stream: false,
       }),
+      signal: AbortSignal.timeout(30000) // 30-second timeout for generation
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorText = await response.text();
+      let errorData = {};
+      try {
+        errorData = JSON.parse(errorText);
+      } catch (e) {
+        // If parsing fails, use the raw text
+        errorData = { error: errorText };
+      }
+      
+      console.error(`Ollama API error response: ${response.status}`, errorData);
       throw new Error(`Ollama API error: ${response.status} - ${errorData.error || "Unknown error"}`);
     }
 
     const data = await response.json();
+    console.log(`Successfully received response from model: ${modelToUse}`);
+    
     const result = {
       content: data.response,
       context: data.context,
@@ -155,24 +293,103 @@ async function generateResponse(prompt, context = [], systemPrompt = "", modelNa
 
     return result;
   } catch (error) {
-    console.error("Error calling Ollama API:", error);
+    console.error(`Error calling Ollama API with model ${modelName}:`, error);
+    
+    // Check if this is actually a connection error by examining the error more carefully
+    const isConnectionError = (
+      error.message === "CONNECTION_REFUSED" ||
+      error.code === "ConnectionRefused" ||
+      error.name === "ConnectionRefused" ||
+      error.errno === "ECONNREFUSED" ||
+      (error.cause && error.cause.code === "ECONNREFUSED") ||
+      (error.message && error.message.includes("ECONNREFUSED")) ||
+      (error.toString().includes("ECONNREFUSED"))
+    );
+    
+    // Check if this is a timeout error
+    const isTimeoutError = (
+      error.name === "TimeoutError" ||
+      error.message.includes("timeout") ||
+      error.message.includes("aborted") ||
+      error.code === "TIMEOUT" ||
+      (error.cause && error.cause.name === "TimeoutError")
+    );
     
     // Provide helpful error messages based on error type
-    if (error.message.includes("not available")) {
+    if (isTimeoutError) {
+      return {
+        content: `The ${modelName} model is taking too long to respond (timeout). This model might be slow to load or having issues. Try using a different model like "phi:latest" or "mistral:7b" which may be more responsive.`,
+        context: context,
+      };
+    } else if (isConnectionError) {
+      
+      // Special handling for model names with special characters
+      if (modelName.includes(":")) {
+        const simplifiedName = modelName.split(":")[0];
+        return {
+          content: `I'm having trouble connecting to the model "${modelName}". This may be due to special characters in the model name. Try using a simplified model name without colons (e.g., "${simplifiedName}") or run "ollama pull ${simplifiedName}" to download a model without special characters.`,
+          context: context,
+        };
+      } else {
+        return {
+          content: "I cannot connect to the Ollama service. Please make sure Ollama is running on your computer by opening the Ollama application first, then refresh this page and try again.",
+          context: context,
+        };
+      }
+    } else if (error.message.includes("not available")) {
       return {
         content: "I'm having trouble connecting to the Ollama service. Please make sure Ollama is running and try again.",
         context: context,
       };
-    } else if (error.message.includes("not found")) {
+    } else if (error.message.includes("not found") || error.message.includes("unavailable")) {
+      // If model has special characters, suggest a simplified version
+      if (modelName.includes(":")) {
+        const simplifiedName = modelName.split(":")[0];
+        return {
+          content: `The model "${modelName}" was not found or is unavailable. This may be due to special characters in the model name. Try using a simplified model name (e.g., "${simplifiedName}") or run "ollama pull ${simplifiedName}" to download a model without special characters.`,
+          context: context,
+        };
+      } else {
+        return {
+          content: `The model "${modelName}" was not found or is unavailable. Please make sure it's downloaded using "ollama pull ${modelName}" and try again.`,
+          context: context,
+        };
+      }
+    } else if (error.message.includes("context length")) {
       return {
-        content: `The model "${modelName}" was not found. Please make sure it's downloaded using "ollama pull ${modelName}" and try again.`,
+        content: `The conversation is too long for the ${modelName} model. Please try clearing the chat history or using a model with larger context window.`,
         context: context,
       };
     } else {
-      return {
-        content: "Sorry, I encountered an error processing your request. Please try again later.",
-        context: context,
-      };
+      // Log the actual error for debugging
+      console.error("Unhandled error in generateResponse:", error);
+      console.error("Error type:", typeof error);
+      console.error("Error properties:", Object.keys(error));
+      console.error("Error message:", error.message);
+      console.error("Error stack:", error.stack);
+      
+      // For any other errors, provide a generic response without mentioning special characters
+      // unless it's actually a model-related error
+      if (error.message && (error.message.includes("model") || error.message.includes("Model"))) {
+        if (modelName.includes(":")) {
+          const simplifiedName = modelName.split(":")[0];
+          return {
+            content: `I encountered an error while using the ${modelName} model. This might be because the model name contains special characters. Try using a simplified model name (e.g., "${simplifiedName}") or run "ollama pull ${simplifiedName}" to download a model without special characters.`,
+            context: context,
+          };
+        } else {
+          return {
+            content: `I encountered an error while using the ${modelName} model. Please make sure Ollama is running and you've downloaded the model with "ollama pull ${modelName}".`,
+            context: context,
+          };
+        }
+      } else {
+        // For non-model-specific errors, provide a generic response
+        return {
+          content: `I encountered an unexpected error while processing your request. Please try again, and if the problem persists, check that Ollama is running properly.`,
+          context: context,
+        };
+      }
     }
   }
 }
@@ -319,6 +536,60 @@ function getSessionContext(sessionId) {
     // Fallback to in-memory if database fails
     const session = sessions.get(sessionId);
     return session ? session.context : null;
+  }
+}
+
+// Function to clean up contaminated conversation history
+function cleanupContaminatedSessions() {
+  try {
+    console.log("Cleaning up contaminated conversation history...");
+    
+    // Get all sessions
+    const allSessions = db.query('SELECT id FROM sessions').all();
+    
+    let cleanedCount = 0;
+    
+    allSessions.forEach(session => {
+      const sessionId = session.id;
+      
+      // Get messages for this session
+      const messages = db.query('SELECT id, content, role FROM messages WHERE session_id = ? ORDER BY timestamp', [sessionId]).all();
+      
+      // Find contaminated assistant messages
+      const contaminatedMessages = messages.filter(msg => {
+        if (msg.role !== 'assistant') return false;
+        
+        const content = msg.content.toLowerCase();
+        const errorPatterns = [
+          'having trouble connecting',
+          'special characters in the model name',
+          'connection refused',
+          'ollama is not running',
+          'model not found',
+          'unable to connect',
+          'try using a simplified model name',
+          'run "ollama pull'
+        ];
+        
+        return errorPatterns.some(pattern => content.includes(pattern));
+      });
+      
+      // Delete contaminated messages
+      if (contaminatedMessages.length > 0) {
+        console.log(`Cleaning ${contaminatedMessages.length} contaminated messages from session ${sessionId}`);
+        
+        contaminatedMessages.forEach(msg => {
+          db.run('DELETE FROM messages WHERE id = ?', [msg.id]);
+        });
+        
+        cleanedCount += contaminatedMessages.length;
+      }
+    });
+    
+    console.log(`Cleanup complete. Removed ${cleanedCount} contaminated messages.`);
+    
+  } catch (error) {
+    console.error("Error during cleanup:", error);
   }
 }
 
@@ -527,7 +798,41 @@ function formatConversationForSystemPrompt(sessionId, maxMessages = 20) {
   const session = getOrCreateSession(sessionId);
   const recentMessages = session.messages.slice(-maxMessages);
   
-  return recentMessages.map(msg =>
+  // Filter out error messages and problematic responses to prevent contamination
+  const filteredMessages = recentMessages.filter(msg => {
+    const content = msg.content.toLowerCase();
+    
+    // Skip messages that contain error patterns
+    const errorPatterns = [
+      'having trouble connecting',
+      'special characters in the model name',
+      'connection refused',
+      'ollama is not running',
+      'model not found',
+      'unable to connect',
+      'timeout',
+      'failed to',
+      'error',
+      'try using a simplified model name',
+      'run "ollama pull'
+    ];
+    
+    // If this is an assistant message containing error patterns, skip it
+    if (msg.role === 'assistant' && errorPatterns.some(pattern => content.includes(pattern))) {
+      console.log(`Filtering out error message from history: ${msg.content.substring(0, 100)}...`);
+      return false;
+    }
+    
+    return true;
+  });
+  
+  // If we filtered out too many messages, just use the last few user messages
+  if (filteredMessages.length < 2 && recentMessages.length > 0) {
+    const userMessages = recentMessages.filter(msg => msg.role === 'user').slice(-3);
+    return userMessages.map(msg => `Human: ${msg.content}`).join('\n\n');
+  }
+  
+  return filteredMessages.map(msg =>
     `${msg.role === 'user' ? 'Human' : 'Assistant'}: ${msg.content}`
   ).join('\n\n');
 }
@@ -535,8 +840,8 @@ function formatConversationForSystemPrompt(sessionId, maxMessages = 20) {
 function createSystemPrompt(sessionId, modelName = DEFAULT_MODEL) {
   const conversationHistory = formatConversationForSystemPrompt(sessionId);
   const userInfo = getUserInfo(sessionId);
-  const referenceContexts = getReferenceContexts(sessionId).filter(ctx => ctx.is_active === 1);
-  console.log("Reference contexts for system prompt:", referenceContexts);
+  
+  console.log(`Creating system prompt for session ID: "${sessionId}"`);
   
   // Create user info section if we have any stored information
   let userInfoSection = '';
@@ -548,25 +853,15 @@ function createSystemPrompt(sessionId, modelName = DEFAULT_MODEL) {
     userInfoSection += '\n';
   }
   
-  // Create reference contexts section if we have any active reference contexts
-  let referenceSection = '';
-  if (referenceContexts.length > 0) {
-    referenceSection = 'IMPORTANT REFERENCE INFORMATION YOU MUST USE IN YOUR RESPONSES:\n\n';
-    for (const ctx of referenceContexts) {
-      referenceSection += `[${ctx.title}]\n${ctx.content}\n\n`;
-    }
-    console.log("Added reference section to system prompt:", referenceSection);
-  }
-  
-  return `You are a formal, high-context AI assistant who speaks in polished, professional English. Maintain memory of past interactions and always reference relevant historical context when replying. Avoid small talk or filler. Be direct, informative, and structured in responses. If information is missing, request it explicitly.
+  return `You are a helpful and friendly AI assistant. Be conversational, natural, and personable in your responses. Maintain memory of past interactions and reference relevant context when appropriate. Feel free to be casual and engaging while still being informative and helpful.
 
 You are running locally using Ollama with the ${modelName} model.
 
-${userInfoSection}${referenceSection}Here is the recent conversation history for context:
+${userInfoSection}Here is the recent conversation history for context:
 
 ${conversationHistory}
 
-Please respond in a formal, structured, and informative manner, referencing relevant context from previous exchanges when appropriate. Always remember and use the user's name and other personal details when available. When relevant, refer to the reference information provided.`;
+Please respond in a natural, conversational manner. Remember and use the user's name and personal details when available.`;
 }
 
 // HTML Template
@@ -1537,10 +1832,63 @@ const htmlTemplate = `<!DOCTYPE html>
             clearButton.addEventListener('click', clearChat);
             
             // Model selector change handler
-            modelSelector.addEventListener('change', function() {
-                selectedModel = this.value;
-                localStorage.setItem('selectedModel', selectedModel);
-                updateStatusIndicator();
+            modelSelector.addEventListener('change', async function() {
+                const previousModel = selectedModel;
+                const newModel = this.value;
+                
+                // Show loading state
+                statusIndicator.textContent = 'Checking if Ollama is running...';
+                statusIndicator.className = 'status-indicator';
+                
+                try {
+                    // First check if Ollama is running
+                    const statusResponse = await fetch('/api/status');
+                    if (!statusResponse.ok) {
+                        throw new Error("Ollama is not running");
+                    }
+                    
+                    const statusData = await statusResponse.json();
+                    if (statusData.status !== "connected") {
+                        throw new Error("Ollama is not connected");
+                    }
+                    
+                    // Now check if the model exists
+                    statusIndicator.textContent = 'Checking if model ' + newModel + ' is available...';
+                    
+                    const modelsResponse = await fetch('/api/models');
+                    if (!modelsResponse.ok) {
+                        throw new Error("Failed to fetch models");
+                    }
+                    
+                    const modelsData = await modelsResponse.json();
+                    const modelExists = modelsData.models.some(m => m.name === newModel);
+                    
+                    if (!modelExists) {
+                        showTemporaryMessage('Warning: Model ' + newModel + ' may not be installed. If you encounter errors, run "ollama pull ' + newModel + '" to download it.');
+                    }
+                    
+                    // Update the selected model
+                    selectedModel = newModel;
+                    localStorage.setItem('selectedModel', selectedModel);
+                    updateStatusIndicator();
+                    showTemporaryMessage('Switched to model: ' + selectedModel);
+                    
+                } catch (error) {
+                    console.error("Error switching models:", error);
+                    
+                    // Show a more helpful error message
+                    if (error.message.includes("not running") || error.message.includes("not connected")) {
+                        showTemporaryMessage('Ollama is not running. Please start Ollama and try again.');
+                    } else {
+                        showTemporaryMessage('Failed to switch to ' + newModel + '. ' + error.message);
+                    }
+                    
+                    // Revert to previous model
+                    this.value = previousModel;
+                    selectedModel = previousModel;
+                    localStorage.setItem('selectedModel', previousModel);
+                    updateStatusIndicator();
+                }
             });
             
             // Memory toggle change handler
@@ -2248,7 +2596,7 @@ const server = Bun.serve({
         
         // Create system prompt with conversation history (only if memory is enabled)
         const systemPrompt = memoryEnabled ? createSystemPrompt(sessionId, model) :
-          `You are a formal, high-context AI assistant who speaks in polished, professional English. Avoid small talk or filler. Be direct, informative, and structured in responses. If information is missing, request it explicitly.
+          `You are a helpful and friendly AI assistant. Be conversational, natural, and personable in your responses. Feel free to be casual and engaging while still being informative and helpful.
 
 You are running locally using Ollama with the ${model} model.`;
         
@@ -2262,7 +2610,7 @@ You are running locally using Ollama with the ${model} model.`;
           model
         );
         
-        // Add AI response to session
+        // Add AI response to session (no automatic reference enhancement)
         addMessageToSession(sessionId, "ai", result.content);
         
         // Update session context (only if memory is enabled)
@@ -2501,9 +2849,13 @@ You are running locally using Ollama with the ${model} model.`;
   }
 });
 
+// Clean up contaminated sessions on startup
+cleanupContaminatedSessions();
+
 // Server startup
 console.log(`🤖 Local AI Assistant running at http://localhost:${PORT}`);
 console.log(`📋 Make sure Ollama is running and you have models installed`);
 console.log(`🔧 To install models: ollama pull <model-name> (e.g., ollama pull phi)`);
 console.log(`🌐 Open your browser and navigate to: http://localhost:${PORT}`);
 console.log(`💾 Conversation memory is persisted in SQLite database: ${DB_PATH}`);
+console.log(`🧹 Contaminated conversation history has been cleaned up`);
