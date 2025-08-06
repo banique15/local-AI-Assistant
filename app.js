@@ -65,9 +65,6 @@ db.run(`
   )
 `);
 
-// Drop existing reference_contexts table if it exists
-db.run(`DROP TABLE IF EXISTS reference_contexts`);
-
 // Create table for storing reference contexts without foreign key constraint
 db.run(`
   CREATE TABLE IF NOT EXISTS reference_contexts (
@@ -80,8 +77,8 @@ db.run(`
   )
 `);
 
-// Log that we've recreated the reference_contexts table
-console.log("Recreated reference_contexts table without foreign key constraint");
+// Log that we've ensured the reference_contexts table exists
+console.log("Ensured reference_contexts table exists");
 
 console.log(`📦 SQLite database initialized at ${DB_PATH}`);
 
@@ -522,6 +519,24 @@ function addMessageToSession(sessionId, role, content) {
     
     // Update session last activity
     db.run('UPDATE sessions SET last_activity = ? WHERE id = ?', [timestamp, sessionId]);
+    
+    // If this is the first user message and session title is still "New Chat", update it
+    if (role === 'user') {
+      const currentSession = db.query('SELECT title FROM sessions WHERE id = ?').get(sessionId);
+      const messageCount = db.query('SELECT COUNT(*) as count FROM messages WHERE session_id = ? AND role = "user"').get(sessionId);
+      
+      if (currentSession && (currentSession.title === 'New Chat' || !currentSession.title) && messageCount.count === 1) {
+        // Generate title from first message (limit to 50 characters)
+        let title = content.trim();
+        if (title.length > 50) {
+          title = title.substring(0, 47) + '...';
+        }
+        
+        // Update session title
+        db.run('UPDATE sessions SET title = ? WHERE id = ?', [title, sessionId]);
+        console.log(`Auto-generated session title: "${title}" for session ${sessionId}`);
+      }
+    }
     
     // Get updated session
     const session = getOrCreateSession(sessionId);
@@ -1649,64 +1664,115 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         .session-item {
-            padding: 1rem;
+            padding: 1.25rem;
             border: 1px solid var(--border-color);
-            border-radius: 0.5rem;
+            border-radius: 0.75rem;
             background: var(--bg-color);
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: all 0.3s ease;
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
+            box-shadow: var(--shadow-sm);
         }
 
         .session-item:hover {
             background: var(--secondary-color);
             border-color: var(--primary-color);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-md);
         }
 
         .session-item.current {
             border-color: var(--primary-color);
             background: rgba(37, 99, 235, 0.1);
+            box-shadow: var(--shadow-md);
         }
 
         .session-details {
             flex: 1;
+            min-width: 0;
+        }
+
+        .session-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 0.75rem;
+            gap: 1rem;
         }
 
         .session-title {
             font-weight: 600;
-            font-size: 1rem;
+            font-size: 1.1rem;
             color: var(--text-color);
-            margin: 0 0 0.25rem 0;
+            margin: 0;
+            line-height: 1.3;
+            word-break: break-word;
+            flex: 1;
+        }
+
+        .session-message-count {
+            font-size: 0.75rem;
+            color: var(--light-text);
+            background: var(--secondary-color);
+            padding: 0.25rem 0.5rem;
+            border-radius: 1rem;
+            white-space: nowrap;
+            font-weight: 500;
         }
 
         .session-meta {
-            font-size: 0.75rem;
-            color: var(--light-text);
             display: flex;
-            gap: 1rem;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .session-time {
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .time-label {
+            color: var(--light-text);
+            font-weight: 500;
+            min-width: 80px;
+        }
+
+        .time-value {
+            color: var(--text-color);
+            font-weight: 400;
         }
 
         .session-actions {
             display: flex;
             gap: 0.5rem;
-            align-items: center;
+            align-items: flex-start;
+            margin-left: 1rem;
         }
 
         .session-delete {
-            background: #dc2626;
-            color: white;
-            border: none;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.25rem;
-            font-size: 0.75rem;
+            background: transparent;
+            color: var(--light-text);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem;
+            border-radius: 0.375rem;
+            font-size: 1rem;
             cursor: pointer;
             transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
         }
 
         .session-delete:hover {
-            background: #b91c1c;
+            background: #fef2f2;
+            border-color: #dc2626;
+            color: #dc2626;
         }
 
         .new-session-btn {
@@ -2606,6 +2672,9 @@ const htmlTemplate = `<!DOCTYPE html>
                 // Add AI response to UI and history
                 addMessageToUI('ai', data.response);
                 saveMessage('ai', data.response);
+                
+                // Update current session title if it was auto-generated
+                loadCurrentSessionTitle();
             } catch (error) {
                 console.error('Error:', error);
                 
@@ -2967,23 +3036,38 @@ const htmlTemplate = `<!DOCTYPE html>
             const details = document.createElement('div');
             details.className = 'session-details';
             
+            const header = document.createElement('div');
+            header.className = 'session-header';
+            
             const title = document.createElement('h4');
             title.className = 'session-title';
             title.textContent = session.title || 'New Chat';
             
+            const messageCount = document.createElement('span');
+            messageCount.className = 'session-message-count';
+            messageCount.textContent = (session.message_count || 0) + ' messages';
+            
+            header.appendChild(title);
+            header.appendChild(messageCount);
+            
             const meta = document.createElement('div');
             meta.className = 'session-meta';
             
-            const createdDate = new Date(session.created_at).toLocaleDateString();
-            const lastActivity = new Date(session.last_activity).toLocaleDateString();
-            const messageCount = session.message_count || 0;
+            const createdTime = formatTimeAgo(session.created_at);
+            const lastActivityTime = formatTimeAgo(session.last_activity);
             
-            meta.innerHTML =
-                '<span>Created: ' + createdDate + '</span>' +
-                '<span>Last activity: ' + lastActivity + '</span>' +
-                '<span>Messages: ' + messageCount + '</span>';
+            const createdSpan = document.createElement('div');
+            createdSpan.className = 'session-time';
+            createdSpan.innerHTML = '<span class="time-label">Created:</span> <span class="time-value">' + createdTime + '</span>';
             
-            details.appendChild(title);
+            const activitySpan = document.createElement('div');
+            activitySpan.className = 'session-time';
+            activitySpan.innerHTML = '<span class="time-label">Last activity:</span> <span class="time-value">' + lastActivityTime + '</span>';
+            
+            meta.appendChild(createdSpan);
+            meta.appendChild(activitySpan);
+            
+            details.appendChild(header);
             details.appendChild(meta);
             
             const actions = document.createElement('div');
@@ -2991,7 +3075,8 @@ const htmlTemplate = `<!DOCTYPE html>
             
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'session-delete';
-            deleteBtn.textContent = 'Delete';
+            deleteBtn.innerHTML = '🗑️';
+            deleteBtn.title = 'Delete session';
             deleteBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 deleteSessionConfirm(session.id, session.title);
@@ -3013,6 +3098,28 @@ const htmlTemplate = `<!DOCTYPE html>
             });
             
             sessionList.appendChild(item);
+        }
+        
+        // Format time ago helper function
+        function formatTimeAgo(timestamp) {
+            const now = Date.now();
+            const diff = now - timestamp;
+            const seconds = Math.floor(diff / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+            
+            if (days > 0) {
+                if (days === 1) return '1 day ago';
+                if (days < 7) return days + ' days ago';
+                return new Date(timestamp).toLocaleDateString();
+            } else if (hours > 0) {
+                return hours === 1 ? '1 hour ago' : hours + ' hours ago';
+            } else if (minutes > 0) {
+                return minutes === 1 ? '1 minute ago' : minutes + ' minutes ago';
+            } else {
+                return 'Just now';
+            }
         }
         
         // Create new session
