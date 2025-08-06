@@ -23,6 +23,17 @@ db.run(`
   )
 `);
 
+// Add title column if it doesn't exist (migration)
+try {
+  db.run(`ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT 'New Chat'`);
+  console.log("Added title column to sessions table");
+} catch (error) {
+  // Column already exists, which is fine
+  if (!error.message.includes("duplicate column name")) {
+    console.error("Error adding title column:", error);
+  }
+}
+
 db.run(`
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,7 +112,7 @@ async function getAvailableModels() {
 }
 
 // Ollama API Integration
-async function generateResponse(prompt, context = [], systemPrompt = "", modelName = DEFAULT_MODEL) {
+async function generateResponse(prompt, context = [], systemPrompt = "", modelName = DEFAULT_MODEL, sessionId = null) {
   try {
     console.log(`Generating response using model: ${modelName}`);
     
@@ -128,8 +139,8 @@ async function generateResponse(prompt, context = [], systemPrompt = "", modelNa
       return cachedResponse;
     }
     
-    // Get reference contexts but only use them if the prompt is related
-    const referenceContexts = getReferenceContexts(REFERENCE_SESSION_ID).filter(ctx => ctx.is_active === 1);
+    // Get reference contexts for the current session but only use them if the prompt is related
+    const referenceContexts = getReferenceContexts(sessionId).filter(ctx => ctx.is_active === 1);
     let enhancedPrompt = prompt;
     
     // Check if the prompt is related to any reference contexts
@@ -395,7 +406,7 @@ async function generateResponse(prompt, context = [], systemPrompt = "", modelNa
 }
 
 // Session Management Functions with SQLite persistence
-function getOrCreateSession(sessionId) {
+function getOrCreateSession(sessionId, title = 'New Chat') {
   try {
     const now = Date.now();
     
@@ -404,10 +415,11 @@ function getOrCreateSession(sessionId) {
     
     if (!existingSession) {
       // Create new session
-      db.run('INSERT INTO sessions (id, created_at, last_activity) VALUES (?, ?, ?)',
-        [sessionId, now, now]);
+      db.run('INSERT INTO sessions (id, title, created_at, last_activity) VALUES (?, ?, ?, ?)',
+        [sessionId, title, now, now]);
       return {
         id: sessionId,
+        title,
         messages: [],
         context: null,
         createdAt: now,
@@ -427,6 +439,7 @@ function getOrCreateSession(sessionId) {
     
     return {
       id: sessionId,
+      title: existingSession.title || 'New Chat',
       messages,
       context,
       createdAt: existingSession.created_at,
@@ -444,6 +457,58 @@ function getOrCreateSession(sessionId) {
       });
     }
     return sessions.get(sessionId);
+  }
+}
+
+// Get all sessions for dashboard
+function getAllSessions() {
+  try {
+    const sessions = db.query(`
+      SELECT
+        s.id,
+        s.title,
+        s.created_at,
+        s.last_activity,
+        COUNT(m.id) as message_count
+      FROM sessions s
+      LEFT JOIN messages m ON s.id = m.session_id
+      GROUP BY s.id, s.title, s.created_at, s.last_activity
+      ORDER BY s.last_activity DESC
+    `).all();
+    
+    return sessions;
+  } catch (error) {
+    console.error("SQLite error in getAllSessions:", error);
+    return [];
+  }
+}
+
+// Delete a session and all its data
+function deleteSession(sessionId) {
+  try {
+    db.transaction(() => {
+      db.run('DELETE FROM messages WHERE session_id = ?', [sessionId]);
+      db.run('DELETE FROM contexts WHERE session_id = ?', [sessionId]);
+      db.run('DELETE FROM user_info WHERE session_id = ?', [sessionId]);
+      db.run('DELETE FROM reference_contexts WHERE session_id = ?', [sessionId]);
+      db.run('DELETE FROM sessions WHERE id = ?', [sessionId]);
+    })();
+    
+    return true;
+  } catch (error) {
+    console.error("SQLite error in deleteSession:", error);
+    return false;
+  }
+}
+
+// Update session title
+function updateSessionTitle(sessionId, title) {
+  try {
+    db.run('UPDATE sessions SET title = ? WHERE id = ?', [title, sessionId]);
+    return true;
+  } catch (error) {
+    console.error("SQLite error in updateSessionTitle:", error);
+    return false;
   }
 }
 
@@ -957,12 +1022,15 @@ const htmlTemplate = `<!DOCTYPE html>
         .chat-container {
             flex: 1;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 1rem;
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
             background: var(--bg-color);
             scroll-behavior: smooth;
+            height: calc(100vh - 280px);
+            min-height: 300px;
         }
 
         .chat-container::-webkit-scrollbar {
@@ -1106,6 +1174,10 @@ const htmlTemplate = `<!DOCTYPE html>
             background: var(--chat-bg);
             border-top: 1px solid var(--border-color);
             box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.05);
+            flex-shrink: 0;
+            position: sticky;
+            bottom: 0;
+            z-index: 10;
         }
 
         .input-wrapper {
@@ -1527,6 +1599,238 @@ const htmlTemplate = `<!DOCTYPE html>
             white-space: nowrap;
         }
 
+        /* Session info styles */
+        .session-info {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: var(--bg-color);
+            border-radius: 0.5rem;
+            border: 1px solid var(--border-color);
+        }
+
+        #current-session-title {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-color);
+        }
+
+        .edit-title-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 0.875rem;
+            color: var(--light-text);
+            padding: 0.25rem;
+            border-radius: 0.25rem;
+            transition: all 0.2s ease;
+        }
+
+        .edit-title-btn:hover {
+            background: var(--secondary-color);
+            color: var(--text-color);
+        }
+
+        /* Dashboard styles */
+        .dashboard-modal {
+            width: 95%;
+            max-width: 800px;
+            max-height: 85vh;
+        }
+
+        .session-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .session-item {
+            padding: 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            background: var(--bg-color);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .session-item:hover {
+            background: var(--secondary-color);
+            border-color: var(--primary-color);
+        }
+
+        .session-item.current {
+            border-color: var(--primary-color);
+            background: rgba(37, 99, 235, 0.1);
+        }
+
+        .session-details {
+            flex: 1;
+        }
+
+        .session-title {
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--text-color);
+            margin: 0 0 0.25rem 0;
+        }
+
+        .session-meta {
+            font-size: 0.75rem;
+            color: var(--light-text);
+            display: flex;
+            gap: 1rem;
+        }
+
+        .session-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .session-delete {
+            background: #dc2626;
+            color: white;
+            border: none;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .session-delete:hover {
+            background: #b91c1c;
+        }
+
+        .new-session-btn {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-bottom: 1rem;
+            width: 100%;
+        }
+
+        .new-session-btn:hover {
+            background: var(--primary-hover);
+        }
+
+        .export-import-section {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .export-import-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .export-btn, .import-btn {
+            flex: 1;
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            background: var(--bg-color);
+            color: var(--text-color);
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+        }
+
+        .export-btn:hover, .import-btn:hover {
+            background: var(--secondary-color);
+            border-color: var(--primary-color);
+        }
+
+        .import-file-input {
+            display: none;
+        }
+
+        /* Dashboard View Styles */
+        .dashboard-view {
+            flex: 1;
+            padding: 2rem;
+            overflow-y: auto;
+            background: var(--bg-color);
+        }
+
+        .dashboard-content {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .dashboard-header h2 {
+            margin: 0;
+            color: var(--primary-color);
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        .chat-view {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Update session list for main dashboard */
+        .dashboard-view .session-list {
+            margin-bottom: 2rem;
+        }
+
+        .dashboard-view .session-item {
+            margin-bottom: 1rem;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: var(--shadow-md);
+            transition: all 0.3s ease;
+        }
+
+        .dashboard-view .session-item:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--light-text);
+        }
+
+        .empty-state h3 {
+            margin-bottom: 1rem;
+            color: var(--text-color);
+        }
+
+        .empty-state p {
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+        }
+
         /* Mobile Responsiveness */
         @media (max-width: 768px) {
             .container {
@@ -1685,24 +1989,74 @@ const htmlTemplate = `<!DOCTYPE html>
                         <span class="toggle-text">Memory</span>
                     </label>
                 </div>
+                <button id="back-to-dashboard" class="clear-chat" aria-label="Back to dashboard" style="display: none;">
+                    ← Dashboard
+                </button>
                 <button id="reference-btn" class="clear-chat" aria-label="Manage reference contexts">
                     References
                 </button>
             </div>
+            <div class="session-info" style="display: none;">
+                <span id="current-session-title">New Chat</span>
+                <button id="edit-session-title" class="edit-title-btn" aria-label="Edit session title">✏️</button>
+            </div>
             <div id="status-indicator" class="status-indicator">Connecting...</div>
         </header>
         
-        <div id="chat-container" class="chat-container">
-            <div class="system-message">Start a conversation with your local AI assistant</div>
+        <!-- Dashboard View (Main Interface) -->
+        <div id="dashboard-view" class="dashboard-view">
+            <div class="dashboard-content">
+                <div class="dashboard-header">
+                    <h2>Your Conversations</h2>
+                    <button id="new-session-btn" class="new-session-btn">+ Start New Chat</button>
+                </div>
+                
+                <div id="session-list" class="session-list">
+                    <!-- Session items will be added here dynamically -->
+                </div>
+                
+                <div class="export-import-section">
+                    <h4>Export/Import Sessions</h4>
+                    <div class="export-import-buttons">
+                        <button id="export-sessions-btn" class="export-btn">Export All Sessions</button>
+                        <button id="import-sessions-btn" class="import-btn">Import Sessions</button>
+                        <input type="file" id="import-file-input" class="import-file-input" accept=".json">
+                    </div>
+                </div>
+            </div>
         </div>
         
-        <!-- Typing indicator (hidden by default) -->
-        <div id="typing-indicator" class="typing-indicator" style="display: none;">
-            <div class="message-bubble">
-                <div class="typing-dots">
-                    <span class="typing-dot"></span>
-                    <span class="typing-dot"></span>
-                    <span class="typing-dot"></span>
+        <!-- Chat View (Secondary Interface) -->
+        <div id="chat-view" class="chat-view" style="display: none;">
+            <div id="chat-container" class="chat-container">
+                <div class="system-message">Start a conversation with your local AI assistant</div>
+            </div>
+            
+            <!-- Typing indicator (hidden by default) -->
+            <div id="typing-indicator" class="typing-indicator" style="display: none;">
+                <div class="message-bubble">
+                    <div class="typing-dots">
+                        <span class="typing-dot"></span>
+                        <span class="typing-dot"></span>
+                        <span class="typing-dot"></span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <textarea
+                        id="user-input"
+                        placeholder="Type your message here..."
+                        rows="1"
+                        aria-label="Message input"></textarea>
+                    <button id="send-button" class="send-button" aria-label="Send message">
+                        <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22,2 15,22 11,13 2,9"></polygon>
+                        </svg>
+                    </button>
+                    <button id="clear-chat" class="clear-chat" aria-label="Clear chat">Clear</button>
                 </div>
             </div>
         </div>
@@ -1741,23 +2095,6 @@ const htmlTemplate = `<!DOCTYPE html>
                 </div>
             </div>
         </div>
-        
-        <div class="input-container">
-            <div class="input-wrapper">
-                <textarea
-                    id="user-input"
-                    placeholder="Type your message here..."
-                    rows="1"
-                    aria-label="Message input"></textarea>
-                <button id="send-button" class="send-button" aria-label="Send message">
-                    <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="22" y1="2" x2="11" y2="13"></line>
-                        <polygon points="22,2 15,22 11,13 2,9"></polygon>
-                    </svg>
-                </button>
-                <button id="clear-chat" class="clear-chat" aria-label="Clear chat">Clear</button>
-            </div>
-        </div>
     </div>
     
     <script>
@@ -1781,9 +2118,21 @@ const htmlTemplate = `<!DOCTYPE html>
         const referenceList = document.getElementById('reference-list');
         const referenceSubmit = document.getElementById('reference-submit');
         const referenceCancel = document.getElementById('reference-cancel');
+        
+        // Dashboard elements
+        const backToDashboard = document.getElementById('back-to-dashboard');
+        const dashboardView = document.getElementById('dashboard-view');
+        const chatView = document.getElementById('chat-view');
+        const newSessionBtn = document.getElementById('new-session-btn');
+        const sessionList = document.getElementById('session-list');
+        const currentSessionTitle = document.getElementById('current-session-title');
+        const editSessionTitle = document.getElementById('edit-session-title');
+        const exportSessionsBtn = document.getElementById('export-sessions-btn');
+        const importSessionsBtn = document.getElementById('import-sessions-btn');
+        const importFileInput = document.getElementById('import-file-input');
+        const sessionInfo = document.querySelector('.session-info');
 
-        // Fixed session ID for references
-        const REFERENCE_SESSION_ID = 'fixed_reference_session';
+        // References will be session-specific (no fixed session ID needed)
         
         // Session management
         let sessionId = localStorage.getItem('sessionId');
@@ -1799,16 +2148,21 @@ const htmlTemplate = `<!DOCTYPE html>
 
         // Initialize chat with stored messages
         function initChat() {
+            // Show dashboard by default
+            showDashboard();
+            
+            // Load session list
+            loadSessionList();
+            
             // Ensure session ID is saved to localStorage
             localStorage.setItem('sessionId', sessionId);
             console.log("Session ID saved to localStorage:", sessionId);
             
-            // Display stored messages
+            // If there's an existing session with messages, we can optionally load it
+            // But keep dashboard as the main interface
             if (messageHistory.length > 0) {
-                chatContainer.innerHTML = '';
-                messageHistory.forEach(message => {
-                    addMessageToUI(message.role, message.content);
-                });
+                console.log("Found existing message history for session:", sessionId);
+                // The user can click on the session in the dashboard to continue
             }
             
             // Auto-resize textarea
@@ -1969,6 +2323,63 @@ const htmlTemplate = `<!DOCTYPE html>
             referenceCancel.addEventListener('click', function() {
                 resetReferenceForm();
             });
+            
+            // Back to dashboard button handler
+            backToDashboard.addEventListener('click', function() {
+                showDashboard();
+            });
+            
+            // New session button handler
+            newSessionBtn.addEventListener('click', function() {
+                createNewSession();
+            });
+            
+            // Edit session title handler
+            editSessionTitle.addEventListener('click', function() {
+                editCurrentSessionTitle();
+            });
+            
+            // Export sessions button handler
+            exportSessionsBtn.addEventListener('click', function() {
+                exportAllSessions();
+            });
+            
+            // Import sessions button handler
+            importSessionsBtn.addEventListener('click', function() {
+                importFileInput.click();
+            });
+            
+            // Import file input handler
+            importFileInput.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    importSessions(file);
+                }
+            });
+            
+            // Load current session title
+            loadCurrentSessionTitle();
+        }
+
+        // View Switching Functions
+        
+        // Show dashboard view
+        function showDashboard() {
+            dashboardView.style.display = 'block';
+            chatView.style.display = 'none';
+            backToDashboard.style.display = 'none';
+            sessionInfo.style.display = 'none';
+            referenceBtn.style.display = 'none';
+            loadSessionList();
+        }
+        
+        // Show chat view
+        function showChat() {
+            dashboardView.style.display = 'none';
+            chatView.style.display = 'flex';
+            backToDashboard.style.display = 'inline-block';
+            sessionInfo.style.display = 'flex';
+            referenceBtn.style.display = 'inline-block';
         }
 
         // Generate a random session ID
@@ -2217,10 +2628,10 @@ const htmlTemplate = `<!DOCTYPE html>
         // Load reference contexts from server
         async function loadReferenceContexts() {
             try {
-                // Use fixed session ID for references
-                console.log("Loading reference contexts using fixed session ID:", REFERENCE_SESSION_ID);
+                // Use current session ID for references
+                console.log("Loading reference contexts for current session ID:", sessionId);
                 
-                const response = await fetch('/api/reference?sessionId=' + REFERENCE_SESSION_ID);
+                const response = await fetch('/api/reference?sessionId=' + sessionId);
                 console.log("Response status:", response.status);
                 
                 if (!response.ok) {
@@ -2265,18 +2676,18 @@ const htmlTemplate = `<!DOCTYPE html>
         // Add reference context to UI and database
         async function addReferenceContextUI(title, content) {
             try {
-                console.log("Adding reference with fixed session ID:", REFERENCE_SESSION_ID);
+                console.log("Adding reference for current session ID:", sessionId);
                 console.log("Title:", title);
                 console.log("Content:", content);
                 
-                // Send request to server using fixed session ID
+                // Send request to server using current session ID
                 const response = await fetch('/api/reference', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        sessionId: REFERENCE_SESSION_ID,
+                        sessionId: sessionId,
                         title,
                         content
                     })
@@ -2287,7 +2698,7 @@ const htmlTemplate = `<!DOCTYPE html>
                 }
                 
                 const data = await response.json();
-                console.log("Added reference context:", data, "for fixed session:", REFERENCE_SESSION_ID);
+                console.log("Added reference context:", data, "for session:", sessionId);
                 
                 // Create reference item
                 createReferenceItem(data.id, title, content, data.timestamp, true);
@@ -2369,7 +2780,7 @@ const htmlTemplate = `<!DOCTYPE html>
             const toggleCheckbox = item.querySelector('.reference-active');
             toggleCheckbox.addEventListener('change', async function() {
                 try {
-                    // Send request to server with fixed session ID
+                    // Send request to server with current session ID
                     const response = await fetch('/api/reference/toggle', {
                         method: 'POST',
                         headers: {
@@ -2378,7 +2789,7 @@ const htmlTemplate = `<!DOCTYPE html>
                         body: JSON.stringify({
                             id,
                             isActive: this.checked,
-                            sessionId: REFERENCE_SESSION_ID
+                            sessionId: sessionId
                         })
                     });
                     
@@ -2414,7 +2825,7 @@ const htmlTemplate = `<!DOCTYPE html>
             deleteButton.addEventListener('click', async function() {
                 if (confirm('Are you sure you want to delete this reference context?')) {
                     try {
-                        // Send request to server with fixed session ID
+                        // Send request to server with current session ID
                         const response = await fetch('/api/reference/delete', {
                             method: 'POST',
                             headers: {
@@ -2422,7 +2833,7 @@ const htmlTemplate = `<!DOCTYPE html>
                             },
                             body: JSON.stringify({
                                 id,
-                                sessionId: REFERENCE_SESSION_ID
+                                sessionId: sessionId
                             })
                         });
                         
@@ -2473,7 +2884,7 @@ const htmlTemplate = `<!DOCTYPE html>
                         id,
                         title,
                         content,
-                        sessionId: REFERENCE_SESSION_ID // Add fixed session ID
+                        sessionId: sessionId // Add current session ID
                     })
                 });
                 
@@ -2499,6 +2910,350 @@ const htmlTemplate = `<!DOCTYPE html>
             } catch (error) {
                 console.error('Error updating reference context:', error);
                 alert('Failed to update reference context. Please try again.');
+            }
+        }
+        
+        // Session Dashboard Functions
+        
+        // Load current session title
+        async function loadCurrentSessionTitle() {
+            try {
+                const response = await fetch('/api/sessions/' + sessionId);
+                if (response.ok) {
+                    const sessionData = await response.json();
+                    currentSessionTitle.textContent = sessionData.title || 'New Chat';
+                } else {
+                    currentSessionTitle.textContent = 'New Chat';
+                }
+            } catch (error) {
+                console.error('Error loading session title:', error);
+                currentSessionTitle.textContent = 'New Chat';
+            }
+        }
+        
+        // Load session list for dashboard
+        async function loadSessionList() {
+            try {
+                const response = await fetch('/api/sessions');
+                if (!response.ok) {
+                    throw new Error('Failed to load sessions');
+                }
+                
+                const sessions = await response.json();
+                sessionList.innerHTML = '';
+                
+                if (sessions.length === 0) {
+                    sessionList.innerHTML = '<div class="system-message">No saved sessions found. Start a new chat to create your first session.</div>';
+                    return;
+                }
+                
+                sessions.forEach(session => {
+                    createSessionItem(session);
+                });
+            } catch (error) {
+                console.error('Error loading sessions:', error);
+                sessionList.innerHTML = '<div class="system-message">Failed to load sessions. Please try again.</div>';
+            }
+        }
+        
+        // Create session item element
+        function createSessionItem(session) {
+            const item = document.createElement('div');
+            item.className = 'session-item';
+            if (session.id === sessionId) {
+                item.classList.add('current');
+            }
+            
+            const details = document.createElement('div');
+            details.className = 'session-details';
+            
+            const title = document.createElement('h4');
+            title.className = 'session-title';
+            title.textContent = session.title || 'New Chat';
+            
+            const meta = document.createElement('div');
+            meta.className = 'session-meta';
+            
+            const createdDate = new Date(session.created_at).toLocaleDateString();
+            const lastActivity = new Date(session.last_activity).toLocaleDateString();
+            const messageCount = session.message_count || 0;
+            
+            meta.innerHTML =
+                '<span>Created: ' + createdDate + '</span>' +
+                '<span>Last activity: ' + lastActivity + '</span>' +
+                '<span>Messages: ' + messageCount + '</span>';
+            
+            details.appendChild(title);
+            details.appendChild(meta);
+            
+            const actions = document.createElement('div');
+            actions.className = 'session-actions';
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'session-delete';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                deleteSessionConfirm(session.id, session.title);
+            });
+            
+            actions.appendChild(deleteBtn);
+            
+            item.appendChild(details);
+            item.appendChild(actions);
+            
+            // Click to switch session
+            item.addEventListener('click', function() {
+                if (session.id !== sessionId) {
+                    switchToSession(session.id, session.title);
+                } else {
+                    // If clicking on current session, just show chat view
+                    showChat();
+                }
+            });
+            
+            sessionList.appendChild(item);
+        }
+        
+        // Create new session
+        async function createNewSession() {
+            try {
+                const newSessionId = generateSessionId();
+                const title = 'New Chat';
+                
+                const response = await fetch('/api/sessions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        sessionId: newSessionId,
+                        title: title
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to create session');
+                }
+                
+                // Switch to new session and show chat view
+                switchToSession(newSessionId, title);
+                showChat();
+                
+                showTemporaryMessage('New chat session created');
+            } catch (error) {
+                console.error('Error creating new session:', error);
+                alert('Failed to create new session. Please try again.');
+            }
+        }
+        
+        // Switch to a different session
+        function switchToSession(newSessionId, title) {
+            // Save current session ID
+            sessionId = newSessionId;
+            localStorage.setItem('sessionId', sessionId);
+            
+            // Clear current chat
+            chatContainer.innerHTML = '<div class="system-message">Loading session...</div>';
+            messageHistory = [];
+            
+            // Update UI
+            currentSessionTitle.textContent = title || 'New Chat';
+            
+            // Show chat view first to ensure input box is visible
+            showChat();
+            
+            // Load session messages
+            loadSessionMessages(newSessionId);
+            
+            console.log('Switched to session:', newSessionId);
+        }
+        
+        // Load messages for a session
+        async function loadSessionMessages(sessionId) {
+            try {
+                console.log('Loading messages for session:', sessionId);
+                const response = await fetch('/api/history?sessionId=' + sessionId);
+                if (response.ok) {
+                    const data = await response.json();
+                    const history = data.history || [];
+                    
+                    console.log('Loaded message history:', history);
+                    
+                    // Clear current chat
+                    chatContainer.innerHTML = '';
+                    messageHistory = [];
+                    
+                    if (history.length === 0) {
+                        chatContainer.innerHTML = '<div class="system-message">Start a conversation with your local AI assistant</div>';
+                        console.log('No messages found for session:', sessionId);
+                    } else {
+                        console.log('Displaying', history.length, 'messages');
+                        history.forEach(message => {
+                            addMessageToUI(message.role, message.content);
+                            messageHistory.push({ role: message.role, content: message.content });
+                        });
+                        
+                        // Scroll to bottom to show latest messages
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }
+                    
+                    // Update localStorage for the current session
+                    localStorage.setItem('messageHistory_' + sessionId, JSON.stringify(messageHistory));
+                    console.log('Session messages loaded successfully');
+                } else {
+                    console.error('Failed to load session history, status:', response.status);
+                    chatContainer.innerHTML = '<div class="system-message">Failed to load session. Start a conversation with your local AI assistant</div>';
+                }
+            } catch (error) {
+                console.error('Error loading session messages:', error);
+                chatContainer.innerHTML = '<div class="system-message">Error loading session. Start a conversation with your local AI assistant</div>';
+            }
+        }
+        
+        // Delete session with confirmation
+        function deleteSessionConfirm(sessionIdToDelete, title) {
+            if (confirm('Are you sure you want to delete the session "' + title + '"? This action cannot be undone.')) {
+                deleteSessionById(sessionIdToDelete);
+            }
+        }
+        
+        // Delete session by ID
+        async function deleteSessionById(sessionIdToDelete) {
+            try {
+                const response = await fetch('/api/sessions/' + sessionIdToDelete, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to delete session');
+                }
+                
+                // If we're deleting the current session, create a new one
+                if (sessionIdToDelete === sessionId) {
+                    const newSessionId = generateSessionId();
+                    sessionId = newSessionId;
+                    localStorage.setItem('sessionId', sessionId);
+                    
+                    // Clear chat
+                    chatContainer.innerHTML = '<div class="system-message">Start a conversation with your local AI assistant</div>';
+                    messageHistory = [];
+                    localStorage.removeItem('messageHistory_' + sessionIdToDelete);
+                    
+                    currentSessionTitle.textContent = 'New Chat';
+                }
+                
+                // Reload session list
+                loadSessionList();
+                showTemporaryMessage('Session deleted successfully');
+                
+            } catch (error) {
+                console.error('Error deleting session:', error);
+                alert('Failed to delete session. Please try again.');
+            }
+        }
+        
+        // Edit current session title
+        function editCurrentSessionTitle() {
+            const newTitle = prompt('Enter new session title:', currentSessionTitle.textContent);
+            if (newTitle && newTitle.trim() !== '') {
+                updateSessionTitle(sessionId, newTitle.trim());
+            }
+        }
+        
+        // Update session title
+        async function updateSessionTitle(sessionId, newTitle) {
+            try {
+                const response = await fetch('/api/sessions/' + sessionId, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        title: newTitle
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to update session title');
+                }
+                
+                currentSessionTitle.textContent = newTitle;
+                showTemporaryMessage('Session title updated');
+                
+            } catch (error) {
+                console.error('Error updating session title:', error);
+                alert('Failed to update session title. Please try again.');
+            }
+        }
+        
+        // Export all sessions
+        async function exportAllSessions() {
+            try {
+                const response = await fetch('/api/sessions/export');
+                if (!response.ok) {
+                    throw new Error('Failed to export sessions');
+                }
+                
+                const exportData = await response.json();
+                
+                // Create download link
+                const dataStr = JSON.stringify(exportData, null, 2);
+                const dataBlob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(dataBlob);
+                
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'ai-assistant-sessions-' + new Date().toISOString().split('T')[0] + '.json';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+                
+                showTemporaryMessage('Sessions exported successfully');
+            } catch (error) {
+                console.error('Error exporting sessions:', error);
+                alert('Failed to export sessions. Please try again.');
+            }
+        }
+        
+        // Import sessions from file
+        async function importSessions(file) {
+            try {
+                const text = await file.text();
+                const importData = JSON.parse(text);
+                
+                // Validate import data structure
+                if (!importData.sessions || !Array.isArray(importData.sessions)) {
+                    throw new Error('Invalid import file format');
+                }
+                
+                const response = await fetch('/api/sessions/import', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(importData)
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to import sessions');
+                }
+                
+                const result = await response.json();
+                
+                // Reload session list
+                loadSessionList();
+                
+                showTemporaryMessage('Sessions imported successfully: ' + result.imported + ' sessions');
+                
+                // Reset file input
+                importFileInput.value = '';
+                
+            } catch (error) {
+                console.error('Error importing sessions:', error);
+                alert('Failed to import sessions. Please check the file format and try again.');
+                importFileInput.value = '';
             }
         }
         
@@ -2607,7 +3362,8 @@ You are running locally using Ollama with the ${model} model.`;
           message,
           existingContext || [],
           systemPrompt,
-          model
+          model,
+          sessionId
         );
         
         // Add AI response to session (no automatic reference enhancement)
@@ -2839,6 +3595,259 @@ You are running locally using Ollama with the ${model} model.`;
         console.error("Error deleting reference context:", error);
         return new Response(
           JSON.stringify({ error: "Failed to delete reference context" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for getting all sessions
+    if (url.pathname === "/api/sessions" && req.method === "GET") {
+      try {
+        const sessions = getAllSessions();
+        return new Response(
+          JSON.stringify(sessions),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error retrieving sessions:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to retrieve sessions" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for creating a new session
+    if (url.pathname === "/api/sessions" && req.method === "POST") {
+      try {
+        const body = await req.json();
+        const { sessionId, title } = body;
+        
+        if (!sessionId) {
+          return new Response(
+            JSON.stringify({ error: "SessionId is required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        // Create new session
+        const session = getOrCreateSession(sessionId, title || 'New Chat');
+        
+        return new Response(
+          JSON.stringify({ success: true, session }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error creating session:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to create session" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for getting a specific session
+    if (url.pathname.startsWith("/api/sessions/") && req.method === "GET") {
+      try {
+        const sessionId = url.pathname.split("/api/sessions/")[1];
+        
+        if (!sessionId) {
+          return new Response(
+            JSON.stringify({ error: "SessionId is required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        const session = getOrCreateSession(sessionId);
+        
+        return new Response(
+          JSON.stringify(session),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error retrieving session:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to retrieve session" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for updating a session
+    if (url.pathname.startsWith("/api/sessions/") && req.method === "PUT") {
+      try {
+        const sessionId = url.pathname.split("/api/sessions/")[1];
+        const body = await req.json();
+        const { title } = body;
+        
+        if (!sessionId || !title) {
+          return new Response(
+            JSON.stringify({ error: "SessionId and title are required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        const success = updateSessionTitle(sessionId, title);
+        
+        if (success) {
+          return new Response(
+            JSON.stringify({ success: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        } else {
+          return new Response(
+            JSON.stringify({ error: "Failed to update session" }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      } catch (error) {
+        console.error("Error updating session:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to update session" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for deleting a session
+    if (url.pathname.startsWith("/api/sessions/") && req.method === "DELETE") {
+      try {
+        const sessionId = url.pathname.split("/api/sessions/")[1];
+        
+        if (!sessionId) {
+          return new Response(
+            JSON.stringify({ error: "SessionId is required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        const success = deleteSession(sessionId);
+        
+        if (success) {
+          return new Response(
+            JSON.stringify({ success: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        } else {
+          return new Response(
+            JSON.stringify({ error: "Failed to delete session" }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      } catch (error) {
+        console.error("Error deleting session:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to delete session" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for exporting all sessions
+    if (url.pathname === "/api/sessions/export" && req.method === "GET") {
+      try {
+        const sessions = getAllSessions();
+        const exportData = {
+          exportDate: new Date().toISOString(),
+          version: "1.0",
+          sessions: []
+        };
+        
+        // Get full session data including messages
+        for (const session of sessions) {
+          const messages = getSessionHistory(session.id);
+          const context = getSessionContext(session.id);
+          const userInfo = getUserInfo(session.id);
+          
+          exportData.sessions.push({
+            id: session.id,
+            title: session.title,
+            created_at: session.created_at,
+            last_activity: session.last_activity,
+            messages: messages,
+            context: context,
+            userInfo: userInfo
+          });
+        }
+        
+        return new Response(
+          JSON.stringify(exportData),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error exporting sessions:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to export sessions" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+    
+    // API route for importing sessions
+    if (url.pathname === "/api/sessions/import" && req.method === "POST") {
+      try {
+        const importData = await req.json();
+        
+        if (!importData.sessions || !Array.isArray(importData.sessions)) {
+          return new Response(
+            JSON.stringify({ error: "Invalid import data format" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        
+        let importedCount = 0;
+        
+        // Import each session
+        db.transaction(() => {
+          for (const sessionData of importData.sessions) {
+            try {
+              // Create session
+              db.run('INSERT OR REPLACE INTO sessions (id, title, created_at, last_activity) VALUES (?, ?, ?, ?)',
+                [sessionData.id, sessionData.title, sessionData.created_at, sessionData.last_activity]);
+              
+              // Import messages
+              if (sessionData.messages && Array.isArray(sessionData.messages)) {
+                // Clear existing messages for this session
+                db.run('DELETE FROM messages WHERE session_id = ?', [sessionData.id]);
+                
+                for (const message of sessionData.messages) {
+                  db.run('INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
+                    [sessionData.id, message.role, message.content, message.timestamp]);
+                }
+              }
+              
+              // Import context
+              if (sessionData.context) {
+                db.run('INSERT OR REPLACE INTO contexts (session_id, context) VALUES (?, ?)',
+                  [sessionData.id, JSON.stringify(sessionData.context)]);
+              }
+              
+              // Import user info
+              if (sessionData.userInfo && typeof sessionData.userInfo === 'object') {
+                // Clear existing user info for this session
+                db.run('DELETE FROM user_info WHERE session_id = ?', [sessionData.id]);
+                
+                for (const [key, value] of Object.entries(sessionData.userInfo)) {
+                  db.run('INSERT INTO user_info (session_id, key, value, timestamp) VALUES (?, ?, ?, ?)',
+                    [sessionData.id, key, value, Date.now()]);
+                }
+              }
+              
+              importedCount++;
+            } catch (sessionError) {
+              console.error(`Error importing session ${sessionData.id}:`, sessionError);
+            }
+          }
+        })();
+        
+        return new Response(
+          JSON.stringify({ success: true, imported: importedCount }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      } catch (error) {
+        console.error("Error importing sessions:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to import sessions" }),
           { status: 500, headers: { "Content-Type": "application/json" } }
         );
       }
