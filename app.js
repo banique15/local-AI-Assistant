@@ -1017,38 +1017,121 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         header {
-            background: linear-gradient(135deg, var(--primary-color), #667eea);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #667eea 100%);
+            background-size: 200% 200%;
+            animation: gradientShift 8s ease infinite;
             color: white;
-            padding: 0.75rem 1rem;
-            border-radius: 12px 12px 0 0;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 1rem 1.5rem;
+            border-radius: 16px 16px 0 0;
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3), 0 2px 16px rgba(0,0,0,0.1);
             position: relative;
             z-index: 10;
+            overflow: hidden;
+        }
+
+        header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, rgba(255,255,255,0.1) 0%, transparent 30%, rgba(255,255,255,0.05) 70%, transparent 100%);
+            pointer-events: none;
+        }
+
+        header::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+            animation: shimmer 6s ease-in-out infinite;
+            pointer-events: none;
+        }
+
+        @keyframes gradientShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        @keyframes shimmer {
+            0%, 100% { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
+            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
         }
 
         .header-content {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            gap: 1rem;
+            gap: 1.5rem;
+            position: relative;
+            z-index: 1;
         }
 
         .header-brand {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
         }
 
-        .brand-icon {
-            font-size: 2rem;
-            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+        .brand-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
         }
 
         .brand-info h1 {
             margin: 0;
-            font-size: 1.25rem;
-            font-weight: 600;
-            line-height: 1.2;
+            font-size: 2.2rem;
+            font-weight: 800;
+            line-height: 1.1;
+            display: flex;
+            align-items: baseline;
+            gap: 0.3rem;
+        }
+
+        .brand-main {
+            background: linear-gradient(135deg, #ffffff 0%, #e0e7ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 3px 6px rgba(0,0,0,0.4);
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+        }
+
+        .brand-accent {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 3px 6px rgba(0,0,0,0.4);
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+            position: relative;
+        }
+
+        .brand-accent::after {
+            content: '';
+            position: absolute;
+            bottom: -3px;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            border-radius: 2px;
+            opacity: 0.8;
+            box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3);
+        }
+
+        .brand-tagline {
+            font-size: 0.8rem;
+            color: rgba(255,255,255,0.9);
+            font-weight: 500;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            opacity: 0.85;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
         }
 
         .header-controls {
@@ -1059,13 +1142,18 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         .status-indicator {
-            padding: 0.2rem 0.6rem;
-            border-radius: 12px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            background: rgba(255,255,255,0.2);
-            color: white;
-            margin-top: 0.25rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            background: rgba(255,255,255,0.15);
+            color: rgba(255,255,255,0.95);
+            margin-top: 0.5rem;
+            border: 1px solid rgba(255,255,255,0.2);
+            backdrop-filter: blur(10px);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
 
         .status-connected {
@@ -2657,7 +2745,272 @@ const htmlTemplate = `<!DOCTYPE html>
             }
         }
 
-        /* Dark mode support */
+        /* Dark mode styles */
+        body.dark-mode {
+            --bg-color: #0f172a;
+            --chat-bg: #1e293b;
+            --text-color: #f1f5f9;
+            --light-text: #94a3b8;
+            --border-color: #334155;
+            --ai-msg-bg: #334155;
+            --secondary-color: #475569;
+        }
+
+        body.dark-mode header {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 50%, #1e293b 100%);
+            background-size: 200% 200%;
+            animation: gradientShift 8s ease infinite;
+            box-shadow: 0 8px 32px rgba(30, 41, 59, 0.5), 0 2px 16px rgba(0,0,0,0.3);
+        }
+
+        body.dark-mode .brand-main {
+            background: linear-gradient(135deg, #f1f5f9 0%, #cbd5e1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        body.dark-mode .brand-accent {
+            background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        body.dark-mode .brand-accent::after {
+            background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
+            box-shadow: 0 2px 4px rgba(52, 211, 153, 0.3);
+        }
+
+        body.dark-mode .brand-tagline {
+            color: rgba(241, 245, 249, 0.8);
+        }
+
+
+        body.dark-mode .status-indicator {
+            background: rgba(30, 41, 59, 0.3) !important;
+            border: 1px solid rgba(51, 65, 85, 0.5);
+            color: rgba(241, 245, 249, 0.9) !important;
+        }
+
+        body.dark-mode .dashboard-view {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        }
+
+        body.dark-mode .dashboard-sidebar {
+            background: linear-gradient(180deg, rgba(30, 41, 59, 0.95) 0%, rgba(15, 23, 42, 0.95) 100%);
+            border-right: 1px solid rgba(51, 65, 85, 0.8);
+        }
+
+        body.dark-mode .dashboard-sidebar .dashboard-header {
+            background: linear-gradient(135deg, #1e293b, #334155);
+        }
+
+        body.dark-mode .dashboard-content {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        }
+
+        body.dark-mode .dashboard-sidebar .session-item {
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode .dashboard-sidebar .session-item .session-title {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .dashboard-sidebar .session-item .session-time {
+            color: #94a3b8 !important;
+        }
+
+        body.dark-mode .dashboard-sidebar .session-item .session-time .time-label {
+            color: #cbd5e1 !important;
+        }
+
+        body.dark-mode .dashboard-sidebar .session-item .session-time .time-value {
+            color: #e2e8f0 !important;
+        }
+
+        body.dark-mode .dashboard-sidebar .session-item:hover {
+            background: rgba(30, 41, 59, 0.95);
+            border-color: var(--primary-color);
+        }
+
+        body.dark-mode .dashboard-sidebar .session-item.active {
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.2), rgba(102, 126, 234, 0.1));
+            border-color: var(--primary-color);
+        }
+
+        body.dark-mode .dashboard-sidebar .export-import-section {
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.8) 100%);
+            border-top: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode .dashboard-sidebar .export-import-section h4 {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .dashboard-sidebar .export-btn,
+        body.dark-mode .dashboard-sidebar .import-btn {
+            background: rgba(30, 41, 59, 0.8) !important;
+            color: #f1f5f9 !important;
+            border: 1px solid rgba(51, 65, 85, 0.8) !important;
+        }
+
+        body.dark-mode .dashboard-sidebar .export-btn:hover,
+        body.dark-mode .dashboard-sidebar .import-btn:hover {
+            background: rgba(30, 41, 59, 0.95) !important;
+            color: #ffffff !important;
+            border-color: var(--primary-color) !important;
+        }
+
+        body.dark-mode .dashboard-welcome {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        }
+
+        body.dark-mode .welcome-subtitle {
+            color: #94a3b8 !important;
+        }
+
+        body.dark-mode .feature-card {
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode .feature-card h3 {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .feature-card p {
+            color: #94a3b8 !important;
+        }
+
+        body.dark-mode .welcome-btn.secondary {
+            background: rgba(30, 41, 59, 0.9) !important;
+            color: #f1f5f9 !important;
+            border: 1px solid rgba(51, 65, 85, 0.8);
+        }
+
+        body.dark-mode .welcome-btn.secondary:hover {
+            background: rgba(30, 41, 59, 0.95) !important;
+            color: #ffffff !important;
+        }
+
+        body.dark-mode .dashboard-chat {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        }
+
+        body.dark-mode .chat-header {
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.95) 0%, rgba(15, 23, 42, 0.9) 100%);
+            border-bottom: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode .chat-title-section h3 {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .chat-actions .btn {
+            background: rgba(30, 41, 59, 0.9) !important;
+            color: #f1f5f9 !important;
+            border: 1px solid rgba(51, 65, 85, 0.8);
+        }
+
+        body.dark-mode .dashboard-chat-messages {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        }
+
+        body.dark-mode .ai-message .message-bubble {
+            background: rgba(30, 41, 59, 0.9) !important;
+            color: #f1f5f9 !important;
+            border: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode .ai-message .message-content {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .dashboard-input-container {
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.95) 0%, rgba(15, 23, 42, 0.9) 100%);
+            border-top: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode .dashboard-input-container .input-wrapper {
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode .dashboard-input-container #dashboard-user-input {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .dashboard-input-container #dashboard-user-input::placeholder {
+            color: #94a3b8 !important;
+        }
+
+        body.dark-mode .dashboard-input-container #dashboard-user-input:focus {
+            background: rgba(30, 41, 59, 0.7);
+        }
+
+        body.dark-mode .system-message {
+            background: rgba(30, 41, 59, 0.8) !important;
+            color: #94a3b8 !important;
+            border: 1px dashed rgba(51, 65, 85, 0.8);
+        }
+
+        body.dark-mode .empty-sessions-message {
+            background: rgba(30, 41, 59, 0.6) !important;
+            border: 1px dashed rgba(51, 65, 85, 0.8);
+        }
+
+        body.dark-mode .empty-sessions-message h4 {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .empty-sessions-message p {
+            color: #94a3b8 !important;
+        }
+
+        body.dark-mode .empty-state {
+            background: rgba(30, 41, 59, 0.8) !important;
+            border: 2px dashed rgba(51, 65, 85, 0.8);
+        }
+
+        body.dark-mode .empty-state h3 {
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .empty-state p {
+            color: #94a3b8 !important;
+        }
+
+        body.dark-mode .session-message-count {
+            color: #94a3b8 !important;
+            background: rgba(51, 65, 85, 0.3) !important;
+            border: 1px solid rgba(51, 65, 85, 0.5);
+        }
+
+        body.dark-mode #model-selector {
+            background: rgba(30, 41, 59, 0.9) !important;
+            color: #f1f5f9 !important;
+            border: 1px solid rgba(51, 65, 85, 0.6);
+        }
+
+        body.dark-mode #model-selector option {
+            background: #1e293b !important;
+            color: #f1f5f9 !important;
+        }
+
+        body.dark-mode .status-connected {
+            color: #10b981 !important;
+            background: rgba(16, 185, 129, 0.2) !important;
+        }
+
+        body.dark-mode .status-disconnected {
+            color: #ef4444 !important;
+            background: rgba(239, 68, 68, 0.2) !important;
+        }
+
+        /* Dark mode support for system preference */
         @media (prefers-color-scheme: dark) {
             :root {
                 --bg-color: #0f172a;
@@ -2690,9 +3043,12 @@ const htmlTemplate = `<!DOCTYPE html>
         <header>
             <div class="header-content">
                 <div class="header-brand">
-                    <div class="brand-icon">🤖</div>
                     <div class="brand-info">
-                        <h1>Local AI Assistant</h1>
+                        <h1>
+                            <span class="brand-main">Echo</span>
+                            <span class="brand-accent">Local</span>
+                        </h1>
+                        <div class="brand-tagline">Your Intelligent Local Companion</div>
                         <div id="status-indicator" class="status-indicator">Connecting...</div>
                     </div>
                 </div>
@@ -2714,6 +3070,10 @@ const htmlTemplate = `<!DOCTYPE html>
                     
                     <button id="reference-btn" class="header-btn" aria-label="Manage reference contexts">
                         📚
+                    </button>
+                    
+                    <button id="theme-toggle" class="header-btn" aria-label="Toggle dark mode">
+                        🌙
                     </button>
                 </div>
             </div>
@@ -3070,6 +3430,35 @@ const htmlTemplate = `<!DOCTYPE html>
                 console.log("Opening reference modal with session ID:", sessionId);
                 referenceModal.style.display = 'flex';
                 loadReferenceContexts(); // Reload references when modal is opened
+            });
+            
+            // Theme toggle functionality
+            const themeToggle = document.getElementById('theme-toggle');
+            let isDarkMode = localStorage.getItem('darkMode') === 'true';
+            
+            // Apply saved theme on load
+            if (isDarkMode) {
+                document.body.classList.add('dark-mode');
+                themeToggle.textContent = '☀️';
+            } else {
+                themeToggle.textContent = '🌙';
+            }
+            
+            // Theme toggle click handler
+            themeToggle.addEventListener('click', function() {
+                isDarkMode = !isDarkMode;
+                
+                if (isDarkMode) {
+                    document.body.classList.add('dark-mode');
+                    themeToggle.textContent = '☀️';
+                    localStorage.setItem('darkMode', 'true');
+                    showTemporaryMessage('Dark mode enabled');
+                } else {
+                    document.body.classList.remove('dark-mode');
+                    themeToggle.textContent = '🌙';
+                    localStorage.setItem('darkMode', 'false');
+                    showTemporaryMessage('Light mode enabled');
+                }
             });
             
             // Modal close handlers
