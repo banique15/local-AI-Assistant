@@ -402,8 +402,8 @@ async function generateResponse(prompt, context = [], systemPrompt = "", modelNa
   }
 }
 
-// Session Management Functions with SQLite persistence
-function getOrCreateSession(sessionId, title = 'New Chat') {
+// Get existing session (no auto-create)
+function getSession(sessionId) {
   try {
     const now = Date.now();
     
@@ -411,20 +411,10 @@ function getOrCreateSession(sessionId, title = 'New Chat') {
     const existingSession = db.query('SELECT * FROM sessions WHERE id = ?').get(sessionId);
     
     if (!existingSession) {
-      // Create new session
-      db.run('INSERT INTO sessions (id, title, created_at, last_activity) VALUES (?, ?, ?, ?)',
-        [sessionId, title, now, now]);
-      return {
-        id: sessionId,
-        title,
-        messages: [],
-        context: null,
-        createdAt: now,
-        lastActivity: now
-      };
+      return null;
     }
     
-    // Update last activity
+    // Update last activity for existing session
     db.run('UPDATE sessions SET last_activity = ? WHERE id = ?', [now, sessionId]);
     
     // Get messages
@@ -443,17 +433,36 @@ function getOrCreateSession(sessionId, title = 'New Chat') {
       lastActivity: now
     };
   } catch (error) {
-    console.error("SQLite error in getOrCreateSession:", error);
-    // Fallback to in-memory if database fails
-    if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, {
-        messages: [],
-        context: null,
-        createdAt: Date.now(),
-        lastActivity: Date.now()
-      });
-    }
-    return sessions.get(sessionId);
+    console.error("SQLite error in getSession:", error);
+    return null;
+  }
+}
+
+// Legacy function for compatibility - now just calls getSession
+function getOrCreateSession(sessionId, title = 'New Chat') {
+  return getSession(sessionId);
+}
+
+// Create session explicitly (only when user requests)
+function createSession(sessionId, title = 'New Chat') {
+  try {
+    const now = Date.now();
+    
+    // Create new session in database
+    db.run('INSERT INTO sessions (id, title, created_at, last_activity) VALUES (?, ?, ?, ?)',
+      [sessionId, title, now, now]);
+    
+    return {
+      id: sessionId,
+      title,
+      messages: [],
+      context: null,
+      createdAt: now,
+      lastActivity: now
+    };
+  } catch (error) {
+    console.error("SQLite error in createSession:", error);
+    return null;
   }
 }
 
@@ -512,6 +521,17 @@ function updateSessionTitle(sessionId, title) {
 function addMessageToSession(sessionId, role, content) {
   try {
     const timestamp = Date.now();
+    
+    // Check if session exists, if not create it (this happens on first message)
+    const existingSession = db.query('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+    
+    if (!existingSession) {
+      // Create session on first message
+      const title = role === 'user' ? (content.length > 50 ? content.substring(0, 47) + '...' : content.trim()) : 'New Chat';
+      db.run('INSERT INTO sessions (id, title, created_at, last_activity) VALUES (?, ?, ?, ?)',
+        [sessionId, title, timestamp, timestamp]);
+      console.log(`Created new session "${title}" for session ${sessionId} on first message`);
+    }
     
     // Insert message into database
     db.run('INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
@@ -986,19 +1006,19 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         .container {
-            max-width: 1200px;
-            margin: 0 auto;
+            width: 100%;
+            max-width: none;
+            margin: 0;
             padding: 0;
             display: flex;
             flex-direction: column;
             height: 100vh;
             background: var(--chat-bg);
-            box-shadow: var(--shadow-lg);
         }
 
         header {
             background: var(--chat-bg);
-            padding: 1rem;
+            padding: 1rem 1.5rem;
             border-bottom: 1px solid var(--border-color);
             box-shadow: var(--shadow-sm);
             position: sticky;
@@ -1006,22 +1026,42 @@ const htmlTemplate = `<!DOCTYPE html>
             z-index: 10;
         }
 
-        h1 {
-            margin: 0 0 0.75rem 0;
-            font-size: 1.5rem;
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 100%;
+            gap: 2rem;
+        }
+
+        .header-left {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .header-left h1 {
+            margin: 0;
+            font-size: 1.75rem;
             font-weight: 700;
             color: var(--primary-color);
-            text-align: center;
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            flex-wrap: wrap;
         }
 
         .status-indicator {
             font-size: 0.75rem;
             color: var(--light-text);
-            text-align: center;
-            margin-top: 0.5rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.375rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 1rem;
             background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            white-space: nowrap;
         }
 
         .status-connected {
@@ -1044,8 +1084,7 @@ const htmlTemplate = `<!DOCTYPE html>
             gap: 0.75rem;
             background: var(--bg-color);
             scroll-behavior: smooth;
-            height: calc(100vh - 280px);
-            min-height: 300px;
+            min-height: 0;
         }
 
         .chat-container::-webkit-scrollbar {
@@ -1512,13 +1551,22 @@ const htmlTemplate = `<!DOCTYPE html>
             100% { transform: rotate(360deg); }
         }
 
-        .controls-container {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 1.5rem;
-            margin: 0.75rem 0;
-            flex-wrap: wrap;
+        .header-btn {
+            background: var(--secondary-color);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .header-btn:hover {
+            background: var(--border-color);
+            border-color: var(--primary-color);
         }
 
         .model-selector-container {
@@ -1775,7 +1823,7 @@ const htmlTemplate = `<!DOCTYPE html>
             color: #dc2626;
         }
 
-        .new-session-btn {
+        .dashboard-sidebar .new-session-btn {
             background: var(--primary-color);
             color: white;
             border: none;
@@ -1785,24 +1833,37 @@ const htmlTemplate = `<!DOCTYPE html>
             font-weight: 500;
             cursor: pointer;
             transition: all 0.2s ease;
-            margin-bottom: 1rem;
             width: 100%;
         }
 
-        .new-session-btn:hover {
+        .dashboard-sidebar .new-session-btn:hover {
             background: var(--primary-hover);
         }
 
-        .export-import-section {
-            margin-top: 1rem;
-            padding-top: 1rem;
+        .dashboard-sidebar .export-import-section {
+            padding: 1rem;
             border-top: 1px solid var(--border-color);
+            background: var(--chat-bg);
+            flex-shrink: 0;
         }
 
-        .export-import-buttons {
+        .dashboard-sidebar .export-import-section h4 {
+            margin: 0 0 0.75rem 0;
+            color: var(--text-color);
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        .dashboard-sidebar .export-import-buttons {
             display: flex;
             gap: 0.5rem;
-            margin-bottom: 1rem;
+        }
+
+        .dashboard-sidebar .export-btn,
+        .dashboard-sidebar .import-btn {
+            flex: 1;
+            padding: 0.5rem;
+            font-size: 0.75rem;
         }
 
         .export-btn, .import-btn {
@@ -1829,29 +1890,208 @@ const htmlTemplate = `<!DOCTYPE html>
         /* Dashboard View Styles */
         .dashboard-view {
             flex: 1;
-            padding: 2rem;
-            overflow-y: auto;
             background: var(--bg-color);
+            width: 100%;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .dashboard-container {
+            display: flex;
+            height: 100%;
+            width: 100%;
+        }
+
+        .dashboard-sidebar {
+            width: 350px;
+            min-width: 300px;
+            max-width: 400px;
+            background: var(--chat-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
         .dashboard-content {
-            max-width: 800px;
-            margin: 0 auto;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--bg-color);
         }
 
-        .dashboard-header {
+        /* Welcome Screen Styles */
+        .dashboard-welcome {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            overflow-y: auto;
+        }
+
+        .welcome-content {
+            text-align: center;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        .welcome-content h1 {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+            color: var(--primary-color);
+            font-weight: 700;
+        }
+
+        .welcome-subtitle {
+            font-size: 1.25rem;
+            color: var(--light-text);
+            margin-bottom: 3rem;
+        }
+
+        .welcome-features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+
+        .feature-card {
+            background: var(--chat-bg);
+            padding: 2rem;
+            border-radius: 1rem;
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+            border-color: var(--primary-color);
+        }
+
+        .feature-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.25rem;
+            margin-bottom: 0.75rem;
+            color: var(--text-color);
+        }
+
+        .feature-card p {
+            color: var(--light-text);
+            line-height: 1.6;
+        }
+
+        .welcome-actions {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .welcome-btn {
+            padding: 0.875rem 2rem;
+            border-radius: 0.75rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: none;
+            min-width: 180px;
+        }
+
+        .welcome-btn.primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .welcome-btn.primary:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+        }
+
+        .welcome-btn.secondary {
+            background: var(--secondary-color);
+            color: var(--text-color);
+        }
+
+        .welcome-btn.secondary:hover {
+            background: var(--border-color);
+        }
+
+        /* Dashboard Chat Styles */
+        .dashboard-chat {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--chat-bg);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 2rem;
-            padding-bottom: 1rem;
-            border-bottom: 2px solid var(--border-color);
+            flex-wrap: wrap;
+            gap: 1rem;
         }
 
-        .dashboard-header h2 {
+        .chat-title-section {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .chat-title-section h3 {
             margin: 0;
+            font-size: 1.25rem;
+            color: var(--text-color);
+            truncate: ellipsis;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+
+        .chat-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .dashboard-chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            background: var(--bg-color);
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .dashboard-input-container {
+            padding: 1rem;
+            background: var(--chat-bg);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .dashboard-sidebar .dashboard-header {
+            padding: 1.5rem 1rem 1rem 1rem;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--chat-bg);
+            flex-shrink: 0;
+        }
+
+        .dashboard-sidebar .dashboard-header h2 {
+            margin: 0 0 1rem 0;
             color: var(--primary-color);
-            font-size: 1.75rem;
+            font-size: 1.5rem;
             font-weight: 700;
         }
 
@@ -1863,50 +2103,153 @@ const htmlTemplate = `<!DOCTYPE html>
             overflow: hidden;
         }
 
-        /* Update session list for main dashboard */
-        .dashboard-view .session-list {
-            margin-bottom: 2rem;
+        /* Sidebar session list */
+        .dashboard-sidebar .session-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
         }
 
-        .dashboard-view .session-item {
+        .dashboard-sidebar .session-item {
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--border-color);
+            background: var(--bg-color);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .dashboard-sidebar .session-item:hover {
+            background: var(--secondary-color);
+            border-color: var(--primary-color);
+        }
+
+        .dashboard-sidebar .session-item.active {
+            background: rgba(37, 99, 235, 0.1);
+            border-color: var(--primary-color);
+        }
+
+        .dashboard-sidebar .session-item .session-title {
+            font-size: 0.95rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .dashboard-sidebar .session-item .session-meta {
+            gap: 0.25rem;
+        }
+
+        .dashboard-sidebar .session-item .session-time {
+            font-size: 0.7rem;
+        }
+
+        .dashboard-sidebar .session-actions {
+            margin-left: 0;
+            margin-top: 0.5rem;
+        }
+
+        /* Empty sessions message */
+        .empty-sessions-message {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--light-text);
+        }
+
+        .empty-sessions-message .empty-icon {
+            font-size: 2.5rem;
             margin-bottom: 1rem;
-            padding: 1.5rem;
-            border-radius: 0.75rem;
-            box-shadow: var(--shadow-md);
-            transition: all 0.3s ease;
+            opacity: 0.6;
         }
 
-        .dashboard-view .session-item:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-lg);
+        .empty-sessions-message h4 {
+            margin: 0 0 0.5rem 0;
+            color: var(--text-color);
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .empty-sessions-message p {
+            margin: 0;
+            font-size: 0.875rem;
+            line-height: 1.4;
         }
 
         .empty-state {
             text-align: center;
-            padding: 3rem 1rem;
+            padding: 4rem 2rem;
             color: var(--light-text);
+            background: var(--chat-bg);
+            border-radius: 1rem;
+            border: 2px dashed var(--border-color);
+            margin: 2rem 0;
         }
 
         .empty-state h3 {
             margin-bottom: 1rem;
             color: var(--text-color);
+            font-size: 1.5rem;
         }
 
         .empty-state p {
             margin-bottom: 2rem;
             font-size: 1.1rem;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
         }
 
         /* Mobile Responsiveness */
         @media (max-width: 768px) {
             .container {
                 height: 100vh;
-                max-width: 100%;
+                width: 100%;
                 border-radius: 0;
             }
 
             header {
                 padding: 0.75rem;
+            }
+
+            .dashboard-container {
+                flex-direction: column;
+            }
+
+            .dashboard-sidebar {
+                width: 100%;
+                max-width: none;
+                min-width: 0;
+                height: 40vh;
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+            }
+
+            .dashboard-content {
+                height: 60vh;
+            }
+
+            .welcome-content h1 {
+                font-size: 2rem;
+            }
+
+            .welcome-features {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+
+            .feature-card {
+                padding: 1.5rem;
+            }
+
+            .welcome-actions {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .welcome-btn {
+                width: 100%;
+                max-width: 300px;
             }
 
             h1 {
@@ -2007,6 +2350,10 @@ const htmlTemplate = `<!DOCTYPE html>
             .input-container {
                 padding: 0.5rem;
             }
+
+            .dashboard-view {
+                padding: 0.5rem;
+            }
         }
 
         /* Dark mode support */
@@ -2071,22 +2418,100 @@ const htmlTemplate = `<!DOCTYPE html>
         
         <!-- Dashboard View (Main Interface) -->
         <div id="dashboard-view" class="dashboard-view">
-            <div class="dashboard-content">
-                <div class="dashboard-header">
-                    <h2>Your Conversations</h2>
-                    <button id="new-session-btn" class="new-session-btn">+ Start New Chat</button>
+            <div class="dashboard-container">
+                <!-- Left Column: Session List -->
+                <div class="dashboard-sidebar">
+                    <div class="dashboard-header">
+                        <h2>Conversations</h2>
+                        <button id="new-session-btn" class="new-session-btn">+ New Chat</button>
+                    </div>
+                    
+                    <div id="session-list" class="session-list">
+                        <!-- Session items will be added here dynamically -->
+                    </div>
+                    
+                    <div class="export-import-section">
+                        <h4>Export/Import</h4>
+                        <div class="export-import-buttons">
+                            <button id="export-sessions-btn" class="export-btn">Export All</button>
+                            <button id="import-sessions-btn" class="import-btn">Import</button>
+                            <input type="file" id="import-file-input" class="import-file-input" accept=".json">
+                        </div>
+                    </div>
                 </div>
                 
-                <div id="session-list" class="session-list">
-                    <!-- Session items will be added here dynamically -->
-                </div>
-                
-                <div class="export-import-section">
-                    <h4>Export/Import Sessions</h4>
-                    <div class="export-import-buttons">
-                        <button id="export-sessions-btn" class="export-btn">Export All Sessions</button>
-                        <button id="import-sessions-btn" class="import-btn">Import Sessions</button>
-                        <input type="file" id="import-file-input" class="import-file-input" accept=".json">
+                <!-- Right Column: Content Area -->
+                <div class="dashboard-content">
+                    <!-- Welcome Screen -->
+                    <div id="dashboard-welcome" class="dashboard-welcome">
+                        <div class="welcome-content">
+                            <h1>🤖 Local AI Assistant</h1>
+                            <p class="welcome-subtitle">Your private, local AI companion</p>
+                            
+                            <div class="welcome-features">
+                                <div class="feature-card">
+                                    <div class="feature-icon">💬</div>
+                                    <h3>Start Chatting</h3>
+                                    <p>Create a new conversation or select an existing one from the sidebar</p>
+                                </div>
+                                
+                                <div class="feature-card">
+                                    <div class="feature-icon">🔒</div>
+                                    <h3>100% Private</h3>
+                                    <p>All conversations stay on your machine - no data sent to external servers</p>
+                                </div>
+                                
+                                <div class="feature-card">
+                                    <div class="feature-icon">🧠</div>
+                                    <h3>Smart Memory</h3>
+                                    <p>Toggle conversation context and add reference materials for better responses</p>
+                                </div>
+                                
+                                <div class="feature-card">
+                                    <div class="feature-icon">⚡</div>
+                                    <h3>Fast & Local</h3>
+                                    <p>Powered by Ollama for quick responses without internet dependency</p>
+                                </div>
+                            </div>
+                            
+                            <div class="welcome-actions">
+                                <button id="welcome-new-chat" class="welcome-btn primary">Start New Conversation</button>
+                                <button id="welcome-manage-models" class="welcome-btn secondary">Manage Models</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Session Chat View -->
+                    <div id="dashboard-chat" class="dashboard-chat" style="display: none;">
+                        <div class="chat-header">
+                            <div class="chat-title-section">
+                                <h3 id="dashboard-chat-title">Chat Session</h3>
+                                <button id="dashboard-edit-title" class="edit-title-btn">✏️</button>
+                            </div>
+                            <div class="chat-actions">
+                                <button id="dashboard-clear-chat" class="btn btn-secondary">Clear Chat</button>
+                                <button id="dashboard-close-chat" class="btn btn-secondary">Close</button>
+                            </div>
+                        </div>
+                        
+                        <div id="dashboard-chat-container" class="dashboard-chat-messages">
+                            <!-- Messages will be loaded here -->
+                        </div>
+                        
+                        <div class="dashboard-input-container">
+                            <div class="input-wrapper">
+                                <textarea
+                                    id="dashboard-user-input"
+                                    placeholder="Type your message here..."
+                                    rows="1"></textarea>
+                                <button id="dashboard-send-button" class="send-button">
+                                    <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                                        <polygon points="22,2 15,22 11,13 2,9"></polygon>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2220,16 +2645,12 @@ const htmlTemplate = `<!DOCTYPE html>
             // Load session list
             loadSessionList();
             
-            // Ensure session ID is saved to localStorage
-            localStorage.setItem('sessionId', sessionId);
-            console.log("Session ID saved to localStorage:", sessionId);
+            // Clear any existing session data from localStorage to prevent auto-creation
+            localStorage.removeItem('sessionId');
             
-            // If there's an existing session with messages, we can optionally load it
-            // But keep dashboard as the main interface
-            if (messageHistory.length > 0) {
-                console.log("Found existing message history for session:", sessionId);
-                // The user can click on the session in the dashboard to continue
-            }
+            // Don't automatically create or load any session
+            // User must click "New Chat" or select an existing session
+            console.log("Dashboard initialized - waiting for user action");
             
             // Auto-resize textarea
             userInput.addEventListener('input', function() {
@@ -2390,11 +2811,6 @@ const htmlTemplate = `<!DOCTYPE html>
                 resetReferenceForm();
             });
             
-            // Back to dashboard button handler
-            backToDashboard.addEventListener('click', function() {
-                showDashboard();
-            });
-            
             // New session button handler
             newSessionBtn.addEventListener('click', function() {
                 createNewSession();
@@ -2425,6 +2841,69 @@ const htmlTemplate = `<!DOCTYPE html>
             
             // Load current session title
             loadCurrentSessionTitle();
+            
+            // Dashboard chat functionality - Set up event listeners
+            setTimeout(() => {
+                const welcomeNewChat = document.getElementById('welcome-new-chat');
+                const welcomeManageModels = document.getElementById('welcome-manage-models');
+                const dashboardUserInput = document.getElementById('dashboard-user-input');
+                const dashboardSendButton = document.getElementById('dashboard-send-button');
+                const dashboardClearChat = document.getElementById('dashboard-clear-chat');
+                const dashboardCloseChat = document.getElementById('dashboard-close-chat');
+                const dashboardEditTitle = document.getElementById('dashboard-edit-title');
+                
+                // Welcome button click handlers
+                if (welcomeNewChat) {
+                    welcomeNewChat.addEventListener('click', function() {
+                        createNewSession();
+                    });
+                }
+                
+                if (welcomeManageModels) {
+                    welcomeManageModels.addEventListener('click', function() {
+                        showTemporaryMessage('To manage models, use: ollama pull <model-name> or ollama list to see installed models');
+                    });
+                }
+                
+                if (dashboardUserInput && dashboardSendButton) {
+                    // Auto-resize textarea
+                    dashboardUserInput.addEventListener('input', function() {
+                        this.style.height = 'auto';
+                        this.style.height = (this.scrollHeight) + 'px';
+                    });
+                    
+                    // Send message on Enter (but allow Shift+Enter for new lines)
+                    dashboardUserInput.addEventListener('keydown', function(e) {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            sendDashboardMessage();
+                        }
+                    });
+                    
+                    // Send button click handler
+                    dashboardSendButton.addEventListener('click', sendDashboardMessage);
+                }
+                
+                if (dashboardClearChat) {
+                    dashboardClearChat.addEventListener('click', function() {
+                        if (confirm('Are you sure you want to clear this chat history?')) {
+                            clearDashboardChat();
+                        }
+                    });
+                }
+                
+                if (dashboardCloseChat) {
+                    dashboardCloseChat.addEventListener('click', function() {
+                        showDashboardWelcome();
+                    });
+                }
+                
+                if (dashboardEditTitle) {
+                    dashboardEditTitle.addEventListener('click', function() {
+                        editDashboardSessionTitle();
+                    });
+                }
+            }, 100);
         }
 
         // View Switching Functions
@@ -2433,19 +2912,122 @@ const htmlTemplate = `<!DOCTYPE html>
         function showDashboard() {
             dashboardView.style.display = 'block';
             chatView.style.display = 'none';
-            backToDashboard.style.display = 'none';
-            sessionInfo.style.display = 'none';
-            referenceBtn.style.display = 'none';
+            
+            // Show welcome screen and hide dashboard chat
+            showDashboardWelcome();
             loadSessionList();
         }
         
-        // Show chat view
+        // Show welcome screen in dashboard
+        function showDashboardWelcome() {
+            const dashboardWelcome = document.getElementById('dashboard-welcome');
+            const dashboardChat = document.getElementById('dashboard-chat');
+            
+            if (dashboardWelcome) dashboardWelcome.style.display = 'flex';
+            if (dashboardChat) dashboardChat.style.display = 'none';
+            
+            // Clear any active session highlighting
+            document.querySelectorAll('.dashboard-sidebar .session-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            
+            // Clear current session
+            sessionId = null;
+            if (localStorage.getItem('sessionId')) {
+                localStorage.removeItem('sessionId');
+            }
+        }
+        
+        // Show chat in dashboard
+        function showDashboardChat(sessionId, title) {
+            const dashboardWelcome = document.getElementById('dashboard-welcome');
+            const dashboardChat = document.getElementById('dashboard-chat');
+            const dashboardChatTitle = document.getElementById('dashboard-chat-title');
+            
+            if (dashboardWelcome) dashboardWelcome.style.display = 'none';
+            if (dashboardChat) dashboardChat.style.display = 'flex';
+            if (dashboardChatTitle) dashboardChatTitle.textContent = title || 'Chat Session';
+            
+            // Load messages for this session
+            loadDashboardSessionMessages(sessionId);
+        }
+        
+        // Load messages for dashboard chat
+        async function loadDashboardSessionMessages(sessionId) {
+            try {
+                console.log('Loading dashboard messages for session:', sessionId);
+                const response = await fetch('/api/history?sessionId=' + sessionId);
+                if (response.ok) {
+                    const data = await response.json();
+                    const history = data.history || [];
+                    
+                    console.log('Loaded dashboard message history:', history);
+                    
+                    // Get dashboard chat container
+                    const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+                    if (!dashboardChatContainer) return;
+                    
+                    // Clear current chat
+                    dashboardChatContainer.innerHTML = '';
+                    
+                    if (history.length === 0) {
+                        dashboardChatContainer.innerHTML = '<div class="system-message">Start a conversation with your local AI assistant</div>';
+                        console.log('No messages found for session:', sessionId);
+                    } else {
+                        console.log('Displaying', history.length, 'messages in dashboard');
+                        history.forEach(message => {
+                            addMessageToDashboardUI(message.role, message.content);
+                        });
+                        
+                        // Scroll to bottom to show latest messages
+                        dashboardChatContainer.scrollTop = dashboardChatContainer.scrollHeight;
+                    }
+                    
+                    console.log('Dashboard session messages loaded successfully');
+                } else {
+                    console.error('Failed to load dashboard session history, status:', response.status);
+                    const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+                    if (dashboardChatContainer) {
+                        dashboardChatContainer.innerHTML = '<div class="system-message">Failed to load session. Try refreshing.</div>';
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading dashboard session messages:', error);
+                const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+                if (dashboardChatContainer) {
+                    dashboardChatContainer.innerHTML = '<div class="system-message">Error loading session. Try refreshing.</div>';
+                }
+            }
+        }
+        
+        // Add message to dashboard UI
+        function addMessageToDashboardUI(role, content) {
+            const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+            if (!dashboardChatContainer) return;
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message');
+            messageDiv.classList.add(role === 'user' ? 'user-message' : 'ai-message');
+            
+            const messageBubble = document.createElement('div');
+            messageBubble.classList.add('message-bubble');
+            
+            const messageContent = document.createElement('p');
+            messageContent.classList.add('message-content');
+            messageContent.textContent = content;
+            
+            messageBubble.appendChild(messageContent);
+            messageDiv.appendChild(messageBubble);
+            dashboardChatContainer.appendChild(messageDiv);
+            
+            // Scroll to bottom
+            dashboardChatContainer.scrollTop = dashboardChatContainer.scrollHeight;
+        }
+        
+        // Show chat view (full screen mode) - Not used in 2-column layout
         function showChat() {
             dashboardView.style.display = 'none';
             chatView.style.display = 'flex';
-            backToDashboard.style.display = 'inline-block';
-            sessionInfo.style.display = 'flex';
-            referenceBtn.style.display = 'inline-block';
         }
 
         // Generate a random session ID
@@ -2986,6 +3568,10 @@ const htmlTemplate = `<!DOCTYPE html>
         
         // Load current session title
         async function loadCurrentSessionTitle() {
+            if (!sessionId) {
+                return; // No session active, don't try to load title
+            }
+            
             try {
                 const response = await fetch('/api/sessions/' + sessionId);
                 if (response.ok) {
@@ -3003,19 +3589,27 @@ const htmlTemplate = `<!DOCTYPE html>
         // Load session list for dashboard
         async function loadSessionList() {
             try {
+                console.log('Loading session list...');
                 const response = await fetch('/api/sessions');
                 if (!response.ok) {
                     throw new Error('Failed to load sessions');
                 }
                 
                 const sessions = await response.json();
+                console.log('Loaded sessions:', sessions);
                 sessionList.innerHTML = '';
                 
                 if (sessions.length === 0) {
-                    sessionList.innerHTML = '<div class="system-message">No saved sessions found. Start a new chat to create your first session.</div>';
+                    console.log('No sessions found');
+                    // Show empty state message
+                    const emptyMessage = document.createElement('div');
+                    emptyMessage.className = 'empty-sessions-message';
+                    emptyMessage.innerHTML = '<div class="empty-icon">💬</div><h4>No conversations yet</h4><p>Click "New Chat" to start your first conversation</p>';
+                    sessionList.appendChild(emptyMessage);
                     return;
                 }
                 
+                console.log('Creating session items for', sessions.length, 'sessions');
                 sessions.forEach(session => {
                     createSessionItem(session);
                 });
@@ -3027,6 +3621,7 @@ const htmlTemplate = `<!DOCTYPE html>
         
         // Create session item element
         function createSessionItem(session) {
+            console.log('Creating session item for:', session);
             const item = document.createElement('div');
             item.className = 'session-item';
             if (session.id === sessionId) {
@@ -3089,15 +3684,23 @@ const htmlTemplate = `<!DOCTYPE html>
             
             // Click to switch session
             item.addEventListener('click', function() {
-                if (session.id !== sessionId) {
-                    switchToSession(session.id, session.title);
-                } else {
-                    // If clicking on current session, just show chat view
-                    showChat();
-                }
+                // Highlight selected session
+                document.querySelectorAll('.dashboard-sidebar .session-item').forEach(i => {
+                    i.classList.remove('active');
+                });
+                item.classList.add('active');
+                
+                // Show chat in dashboard
+                showDashboardChat(session.id, session.title);
+                
+                // Update current session
+                sessionId = session.id;
+                localStorage.setItem('sessionId', sessionId);
+                currentSessionTitle.textContent = session.title || 'New Chat';
             });
             
             sessionList.appendChild(item);
+            console.log('Session item created and added to list');
         }
         
         // Format time ago helper function
@@ -3122,32 +3725,25 @@ const htmlTemplate = `<!DOCTYPE html>
             }
         }
         
-        // Create new session
-        async function createNewSession() {
+        // Create new session (temporary until first message)
+        function createNewSession() {
             try {
                 const newSessionId = generateSessionId();
                 const title = 'New Chat';
                 
-                const response = await fetch('/api/sessions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        sessionId: newSessionId,
-                        title: title
-                    })
+                // Update current session (but don't save to database yet)
+                sessionId = newSessionId;
+                localStorage.setItem('sessionId', sessionId);
+                
+                // Show the new session in dashboard chat (right column)
+                showDashboardChat(newSessionId, title);
+                
+                // Clear any active session highlighting since this is a new unsaved session
+                document.querySelectorAll('.dashboard-sidebar .session-item').forEach(item => {
+                    item.classList.remove('active');
                 });
                 
-                if (!response.ok) {
-                    throw new Error('Failed to create session');
-                }
-                
-                // Switch to new session and show chat view
-                switchToSession(newSessionId, title);
-                showChat();
-                
-                showTemporaryMessage('New chat session created');
+                showTemporaryMessage('New chat ready - send a message to save the session');
             } catch (error) {
                 console.error('Error creating new session:', error);
                 alert('Failed to create new session. Please try again.');
@@ -3174,6 +3770,78 @@ const htmlTemplate = `<!DOCTYPE html>
             loadSessionMessages(newSessionId);
             
             console.log('Switched to session:', newSessionId);
+        }
+        
+        // Load messages for dashboard chat
+        async function loadDashboardSessionMessages(sessionId) {
+            try {
+                console.log('Loading dashboard messages for session:', sessionId);
+                const response = await fetch('/api/history?sessionId=' + sessionId);
+                if (response.ok) {
+                    const data = await response.json();
+                    const history = data.history || [];
+                    
+                    console.log('Loaded dashboard message history:', history);
+                    
+                    // Get dashboard chat container
+                    const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+                    if (!dashboardChatContainer) return;
+                    
+                    // Clear current chat
+                    dashboardChatContainer.innerHTML = '';
+                    
+                    if (history.length === 0) {
+                        dashboardChatContainer.innerHTML = '<div class="system-message">Start a conversation with your local AI assistant</div>';
+                        console.log('No messages found for session:', sessionId);
+                    } else {
+                        console.log('Displaying', history.length, 'messages in dashboard');
+                        history.forEach(message => {
+                            addMessageToDashboardUI(message.role, message.content);
+                        });
+                        
+                        // Scroll to bottom to show latest messages
+                        dashboardChatContainer.scrollTop = dashboardChatContainer.scrollHeight;
+                    }
+                    
+                    console.log('Dashboard session messages loaded successfully');
+                } else {
+                    console.error('Failed to load dashboard session history, status:', response.status);
+                    const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+                    if (dashboardChatContainer) {
+                        dashboardChatContainer.innerHTML = '<div class="system-message">Failed to load session. Try refreshing.</div>';
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading dashboard session messages:', error);
+                const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+                if (dashboardChatContainer) {
+                    dashboardChatContainer.innerHTML = '<div class="system-message">Error loading session. Try refreshing.</div>';
+                }
+            }
+        }
+        
+        // Add message to dashboard UI
+        function addMessageToDashboardUI(role, content) {
+            const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+            if (!dashboardChatContainer) return;
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message');
+            messageDiv.classList.add(role === 'user' ? 'user-message' : 'ai-message');
+            
+            const messageBubble = document.createElement('div');
+            messageBubble.classList.add('message-bubble');
+            
+            const messageContent = document.createElement('p');
+            messageContent.classList.add('message-content');
+            messageContent.textContent = content;
+            
+            messageBubble.appendChild(messageContent);
+            messageDiv.appendChild(messageBubble);
+            dashboardChatContainer.appendChild(messageDiv);
+            
+            // Scroll to bottom
+            dashboardChatContainer.scrollTop = dashboardChatContainer.scrollHeight;
         }
         
         // Load messages for a session
@@ -3361,6 +4029,104 @@ const htmlTemplate = `<!DOCTYPE html>
                 console.error('Error importing sessions:', error);
                 alert('Failed to import sessions. Please check the file format and try again.');
                 importFileInput.value = '';
+            }
+        }
+        
+        // Dashboard chat functions
+        async function sendDashboardMessage() {
+            const dashboardUserInput = document.getElementById('dashboard-user-input');
+            const dashboardSendButton = document.getElementById('dashboard-send-button');
+            
+            if (!dashboardUserInput || !dashboardSendButton) return;
+            
+            const message = dashboardUserInput.value.trim();
+            if (!message) return;
+            
+            if (!selectedModel) {
+                addMessageToDashboardUI('ai', 'Please select a model first.');
+                return;
+            }
+            
+            // Disable input while processing
+            dashboardUserInput.disabled = true;
+            dashboardSendButton.disabled = true;
+            dashboardSendButton.innerHTML = '<div class="loading"></div>';
+            
+            // Add user message to UI
+            addMessageToDashboardUI('user', message);
+            
+            // Clear input
+            dashboardUserInput.value = '';
+            dashboardUserInput.style.height = 'auto';
+            
+            try {
+                // Send request to server
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message,
+                        sessionId,
+                        model: selectedModel,
+                        memoryEnabled: memoryEnabled
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status);
+                }
+                
+                const data = await response.json();
+                
+                // Add AI response to UI
+                addMessageToDashboardUI('ai', data.response);
+                
+                // Update session list to reflect new activity
+                loadSessionList();
+                
+            } catch (error) {
+                console.error('Error:', error);
+                addMessageToDashboardUI('ai', 'Sorry, there was an error processing your request. Please make sure Ollama is running and the selected model is available.');
+            } finally {
+                // Re-enable input
+                dashboardUserInput.disabled = false;
+                dashboardSendButton.disabled = false;
+                dashboardSendButton.innerHTML = '<svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22,2 15,22 11,13 2,9"></polygon></svg>';
+                dashboardUserInput.focus();
+            }
+        }
+        
+        function clearDashboardChat() {
+            const dashboardChatContainer = document.getElementById('dashboard-chat-container');
+            if (dashboardChatContainer) {
+                dashboardChatContainer.innerHTML = '<div class="system-message">Start a conversation with your local AI assistant</div>';
+            }
+            
+            // Clear from server as well
+            fetch('/api/chat', {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    sessionId: sessionId
+                })
+            }).catch(error => {
+                console.error('Error clearing chat:', error);
+            });
+        }
+        
+        function editDashboardSessionTitle() {
+            const dashboardChatTitle = document.getElementById('dashboard-chat-title');
+            if (!dashboardChatTitle) return;
+            
+            const newTitle = prompt('Enter new session title:', dashboardChatTitle.textContent);
+            if (newTitle && newTitle.trim() !== '') {
+                updateSessionTitle(sessionId, newTitle.trim());
+                dashboardChatTitle.textContent = newTitle.trim();
+                loadSessionList(); // Refresh the session list
             }
         }
         
