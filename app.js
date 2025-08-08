@@ -1006,7 +1006,7 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         .container {
-            width: 100%;
+            width: 100vw;
             max-width: none;
             margin: 0;
             padding: 0;
@@ -1014,6 +1014,55 @@ const htmlTemplate = `<!DOCTYPE html>
             flex-direction: column;
             height: 100vh;
             background: var(--chat-bg);
+            position: relative;
+        }
+
+        /* Status Bar Styles */
+        .status-bar {
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            color: white;
+            padding: 0;
+            font-size: 0.75rem;
+            font-weight: 500;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.3);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 20;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100vw;
+            margin: 0;
+            box-sizing: border-box;
+            min-height: 2rem;
+        }
+
+        .status-bar .status-indicator {
+            background: transparent;
+            color: inherit;
+            border: none;
+            padding: 0;
+            margin: 0;
+            font-size: inherit;
+            font-weight: inherit;
+            text-transform: none;
+            letter-spacing: normal;
+            box-shadow: none;
+            backdrop-filter: none;
+            width: 100%;
+            text-align: center;
+        }
+
+        .status-bar .status-connected {
+            color: #10b981;
+        }
+
+        .status-bar .status-disconnected {
+            color: #ef4444;
         }
 
         header {
@@ -1022,11 +1071,13 @@ const htmlTemplate = `<!DOCTYPE html>
             animation: gradientShift 8s ease infinite;
             color: white;
             padding: 1rem 1.5rem;
+            padding-top: calc(1rem + 2.5rem);
             border-radius: 16px 16px 0 0;
             box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3), 0 2px 16px rgba(0,0,0,0.1);
             position: relative;
             z-index: 10;
             overflow: hidden;
+            margin-top: 0;
         }
 
         header::before {
@@ -1142,27 +1193,16 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         .status-indicator {
-            padding: 0.3rem 0.8rem;
-            border-radius: 20px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            background: rgba(255,255,255,0.15);
-            color: rgba(255,255,255,0.95);
-            margin-top: 0.5rem;
-            border: 1px solid rgba(255,255,255,0.2);
-            backdrop-filter: blur(10px);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: inherit;
         }
 
         .status-connected {
-            background: rgba(16, 185, 129, 0.2);
             color: #10b981;
         }
 
         .status-disconnected {
-            background: rgba(239, 68, 68, 0.2);
             color: #ef4444;
         }
 
@@ -2593,12 +2633,19 @@ const htmlTemplate = `<!DOCTYPE html>
         @media (max-width: 768px) {
             .container {
                 height: 100vh;
-                width: 100%;
+                width: 100vw;
                 border-radius: 0;
+            }
+
+            .status-bar {
+                padding: 0;
+                font-size: 0.7rem;
+                min-height: 1.8rem;
             }
 
             header {
                 padding: 0.75rem;
+                padding-top: calc(0.75rem + 2rem);
             }
 
             .dashboard-container {
@@ -2787,9 +2834,12 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
 
+        body.dark-mode .status-bar {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+        }
+
         body.dark-mode .status-indicator {
-            background: rgba(30, 41, 59, 0.3) !important;
-            border: 1px solid rgba(51, 65, 85, 0.5);
             color: rgba(241, 245, 249, 0.9) !important;
         }
 
@@ -3040,6 +3090,11 @@ const htmlTemplate = `<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
+        <!-- Status Bar at the very top -->
+        <div id="status-bar" class="status-bar">
+            <div id="status-indicator" class="status-indicator">Connecting...</div>
+        </div>
+        
         <header>
             <div class="header-content">
                 <div class="header-brand">
@@ -3049,7 +3104,6 @@ const htmlTemplate = `<!DOCTYPE html>
                             <span class="brand-accent">Local</span>
                         </h1>
                         <div class="brand-tagline">Your Intelligent Local Companion</div>
-                        <div id="status-indicator" class="status-indicator">Connecting...</div>
                     </div>
                 </div>
                 
