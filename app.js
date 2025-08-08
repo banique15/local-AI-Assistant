@@ -3068,9 +3068,6 @@ const htmlTemplate = `<!DOCTYPE html>
                         </label>
                     </div>
                     
-                    <button id="reference-btn" class="header-btn" aria-label="Manage reference contexts">
-                        📚
-                    </button>
                     
                     <button id="theme-toggle" class="header-btn" aria-label="Toggle dark mode">
                         🌙
@@ -3156,6 +3153,9 @@ const htmlTemplate = `<!DOCTYPE html>
                                 <button id="dashboard-edit-title" class="edit-title-btn">✏️</button>
                             </div>
                             <div class="chat-actions">
+                                <button id="reference-btn" class="btn btn-secondary" aria-label="Manage reference contexts">
+                                    Reference
+                                </button>
                                 <button id="dashboard-clear-chat" class="btn btn-secondary">Clear Chat</button>
                                 <button id="dashboard-close-chat" class="btn btn-secondary">Close</button>
                             </div>
