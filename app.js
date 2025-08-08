@@ -88,6 +88,62 @@ const sessions = new Map();
 // Response cache for frequently asked questions
 const responseCache = new Map();
 
+// Top 30 Ollama models categorized by RAM requirements
+const modelCategories = {
+  '8gb': {
+    title: '8GB RAM - Lightweight Models',
+    description: 'Efficient models that run smoothly on 8GB RAM systems',
+    models: [
+      { name: 'tinyllama:1.1b', size: '637MB', description: 'Ultra-fast, minimal resource usage, great for quick tasks' },
+      { name: 'phi:2.7b', size: '1.6GB', description: 'Microsoft\'s efficient model, excellent for general use' },
+      { name: 'llama3.2:3b', size: '2.0GB', description: 'Meta\'s latest compact model with strong performance' },
+      { name: 'gemma:2b', size: '1.4GB', description: 'Google\'s lightweight model, good for text generation' },
+      { name: 'qwen2:1.5b', size: '934MB', description: 'Alibaba\'s efficient multilingual model' },
+      { name: 'stablelm2:1.6b', size: '1.0GB', description: 'Stability AI\'s compact language model' },
+      { name: 'orca-mini:3b', size: '1.9GB', description: 'Microsoft\'s instruction-tuned compact model' },
+      { name: 'vicuna:7b', size: '3.8GB', description: 'Fine-tuned LLaMA model with strong conversational abilities' }
+    ]
+  },
+  '16gb': {
+    title: '16GB RAM - Balanced Models',
+    description: 'More capable models that require 16GB RAM for optimal performance',
+    models: [
+      { name: 'mistral:7b', size: '4.1GB', description: 'Mistral AI\'s flagship model, excellent for most tasks' },
+      { name: 'llama3:8b', size: '4.7GB', description: 'Meta\'s powerful general-purpose model' },
+      { name: 'gemma:7b', size: '4.8GB', description: 'Google\'s capable model with strong reasoning' },
+      { name: 'codellama:7b', size: '3.8GB', description: 'Meta\'s specialized coding model' },
+      { name: 'neural-chat:7b', size: '4.1GB', description: 'Intel\'s conversational AI model' },
+      { name: 'zephyr:7b', size: '4.1GB', description: 'HuggingFace\'s instruction-tuned model' },
+      { name: 'openchat:7b', size: '4.1GB', description: 'Open-source conversational model' },
+      { name: 'starling-lm:7b', size: '4.1GB', description: 'Berkeley\'s RLHF-trained model' },
+      { name: 'solar:10.7b', size: '6.1GB', description: 'Upstage\'s high-performance model' },
+      { name: 'dolphin-mistral:7b', size: '4.1GB', description: 'Uncensored fine-tune of Mistral' }
+    ]
+  },
+  '32gb': {
+    title: '32GB RAM - Advanced Models',
+    description: 'High-performance models that need 32GB+ RAM for best results',
+    models: [
+      { name: 'llama3:70b', size: '39GB', description: 'Meta\'s largest and most capable model' },
+      { name: 'codellama:13b', size: '7.3GB', description: 'Enhanced coding model with better capabilities' },
+      { name: 'vicuna:13b', size: '7.3GB', description: 'Larger version with improved performance' },
+      { name: 'wizard-vicuna:13b', size: '7.3GB', description: 'Enhanced instruction-following model' },
+      { name: 'orca:13b', size: '7.3GB', description: 'Microsoft\'s reasoning-focused model' },
+      { name: 'llama2:13b', size: '7.3GB', description: 'Meta\'s previous generation large model' },
+      { name: 'codellama:34b', size: '19GB', description: 'Largest coding model for complex tasks' },
+      { name: 'mixtral:8x7b', size: '26GB', description: 'Mistral\'s mixture of experts model' },
+      { name: 'nous-hermes:13b', size: '7.3GB', description: 'NousResearch\'s instruction-tuned model' },
+      { name: 'wizardlm:13b', size: '7.3GB', description: 'Microsoft\'s enhanced reasoning model' },
+      { name: 'deepseek-coder:33b', size: '18GB', description: 'Specialized large coding model' },
+      { name: 'phind-codellama:34b', size: '19GB', description: 'Phind\'s enhanced coding assistant' }
+    ]
+  }
+};
+
+function getModelCategories() {
+  return modelCategories;
+}
+
 // Function to fetch available models from Ollama
 async function getAvailableModels() {
   try {
@@ -1665,6 +1721,325 @@ const htmlTemplate = `<!DOCTYPE html>
             margin-top: 0.5rem;
         }
 
+        /* Model Management Modal Styles */
+        .model-categories-section,
+        .installed-models-section {
+            margin-bottom: 2rem;
+        }
+
+        .model-categories-section h4,
+        .installed-models-section h4 {
+            margin: 0 0 1rem 0;
+            color: var(--text-color);
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .ram-selector-container {
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            background: rgba(248, 250, 252, 0.8);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .ram-selector-container label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: var(--text-color);
+            font-size: 0.9rem;
+        }
+
+        #ram-selector {
+            width: 100%;
+            max-width: 400px;
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: white;
+            color: var(--text-color);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        #ram-selector:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .model-category {
+            margin-bottom: 2rem;
+            padding: 1.25rem;
+            background: rgba(248, 250, 252, 0.9);
+            border-radius: 10px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+        }
+
+        .model-category h5 {
+            margin: 0 0 0.5rem 0;
+            color: #1e293b;
+            font-size: 1.1rem;
+            font-weight: 800;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .model-category-description {
+            color: #64748b;
+            font-size: 0.85rem;
+            margin-bottom: 1.25rem;
+            font-weight: 500;
+            font-style: italic;
+        }
+
+        .ram-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-right: 0.5rem;
+        }
+
+        .ram-badge.ram-8gb {
+            background: rgba(34, 197, 94, 0.1);
+            color: #16a34a;
+            border: 1px solid rgba(34, 197, 94, 0.2);
+        }
+
+        .ram-badge.ram-16gb {
+            background: rgba(245, 158, 11, 0.1);
+            color: #d97706;
+            border: 1px solid rgba(245, 158, 11, 0.2);
+        }
+
+        .ram-badge.ram-32gb {
+            background: rgba(239, 68, 68, 0.1);
+            color: #dc2626;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .installed-models-section {
+            padding: 1.5rem;
+            background: rgba(248, 250, 252, 0.8);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+        .device-specs {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .device-spec-item {
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid rgba(226, 232, 240, 0.6);
+            text-align: center;
+        }
+
+        .device-spec-label {
+            font-size: 0.75rem;
+            color: var(--light-text);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+        }
+
+        .device-spec-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+
+        .device-tier {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .device-tier.low {
+            background: rgba(239, 68, 68, 0.1);
+            color: #dc2626;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .device-tier.medium {
+            background: rgba(245, 158, 11, 0.1);
+            color: #d97706;
+            border: 1px solid rgba(245, 158, 11, 0.2);
+        }
+
+        .device-tier.high {
+            background: rgba(16, 185, 129, 0.1);
+            color: #059669;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .recommendations-list,
+        .installed-models-list {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+
+        .model-item {
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid rgba(226, 232, 240, 0.6);
+            transition: all 0.3s ease;
+            position: relative;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .model-item:hover {
+            border-color: var(--primary-color);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
+            transform: translateY(-2px);
+        }
+
+        .model-item.recommended {
+            border-color: var(--primary-color);
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(102, 126, 234, 0.04));
+        }
+
+        .model-item.installed {
+            border-color: #10b981;
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(5, 150, 105, 0.04));
+        }
+
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 0.75rem;
+        }
+
+        .model-info {
+            flex: 1;
+        }
+
+        .model-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #1e293b;
+            margin: 0 0 0.25rem 0;
+            line-height: 1.2;
+        }
+
+        .model-size {
+            font-size: 0.75rem;
+            color: #64748b;
+            font-weight: 600;
+            background: rgba(100, 116, 139, 0.1);
+            padding: 0.125rem 0.375rem;
+            border-radius: 4px;
+            display: inline-block;
+        }
+
+        .model-description {
+            font-size: 0.8rem;
+            color: #475569;
+            line-height: 1.4;
+            margin-top: 0.5rem;
+            font-weight: 500;
+        }
+
+        .model-badges {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .model-badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .model-badge.optimal {
+            background: rgba(16, 185, 129, 0.1);
+            color: #059669;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .model-badge.installed {
+            background: rgba(37, 99, 235, 0.1);
+            color: #2563eb;
+            border: 1px solid rgba(37, 99, 235, 0.2);
+        }
+
+        .model-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .install-command {
+            background: rgba(15, 23, 42, 0.08);
+            border: 1px solid rgba(226, 232, 240, 0.8);
+            border-radius: 6px;
+            padding: 0.5rem;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.75rem;
+            color: #0f172a;
+            font-weight: 600;
+            margin-top: 0.5rem;
+            position: relative;
+        }
+
+        .copy-command-btn {
+            position: absolute;
+            top: 0.25rem;
+            right: 0.25rem;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .copy-command-btn:hover {
+            background: var(--primary-hover);
+            transform: scale(1.05);
+        }
+
+        .warning-message {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            color: #d97706;
+            padding: 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            margin-top: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
         .system-message {
             text-align: center;
             color: #64748b;
@@ -2790,6 +3165,51 @@ const htmlTemplate = `<!DOCTYPE html>
             .dashboard-view {
                 padding: 0.5rem;
             }
+
+            /* Model grid responsive */
+            .recommendations-list,
+            .installed-models-list {
+                grid-template-columns: 1fr;
+                gap: 0.75rem;
+            }
+        }
+
+        /* Model grid responsive breakpoints */
+        @media (max-width: 1200px) {
+            .recommendations-list,
+            .installed-models-list {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .recommendations-list,
+            .installed-models-list {
+                grid-template-columns: 1fr;
+                gap: 0.75rem;
+            }
+
+            .model-item {
+                padding: 0.875rem;
+            }
+
+            .model-name {
+                font-size: 0.95rem;
+            }
+
+            .model-description {
+                font-size: 0.75rem;
+            }
+
+            .install-command {
+                font-size: 0.7rem;
+                padding: 0.4rem;
+            }
+
+            .copy-command-btn {
+                font-size: 0.6rem;
+                padding: 0.15rem 0.3rem;
+            }
         }
 
         /* Dark mode styles */
@@ -3273,6 +3693,46 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
         </div>
         
+        <!-- Model Management Modal -->
+        <div id="model-management-modal" class="modal-overlay">
+            <div class="modal dashboard-modal">
+                <div class="modal-header">
+                    <h3 class="modal-title">Ollama Model Library</h3>
+                    <button class="modal-close" id="model-modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <!-- Model Categories -->
+                    <div class="model-categories-section">
+                        <h4>📚 Browse Models by RAM Requirements</h4>
+                        <div class="ram-selector-container">
+                            <label for="ram-selector">Select RAM Category:</label>
+                            <select id="ram-selector" class="form-control">
+                                <option value="">Choose your RAM capacity...</option>
+                                <option value="8gb">8GB RAM - Lightweight Models</option>
+                                <option value="16gb">16GB RAM - Balanced Models</option>
+                                <option value="32gb">32GB RAM - Advanced Models</option>
+                            </select>
+                        </div>
+                        <div id="model-categories">
+                            <!-- Selected category models will be populated here -->
+                        </div>
+                    </div>
+                    
+                    <!-- Installed Models -->
+                    <div id="installed-models" class="installed-models-section">
+                        <h4>🟢 Your Installed Models</h4>
+                        <div id="installed-models-list" class="installed-models-list">
+                            <!-- Installed models will be populated here -->
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="refresh-models-btn" class="btn btn-primary">Refresh Installed Models</button>
+                    <button id="model-modal-close-btn" class="btn btn-secondary">Close</button>
+                </div>
+            </div>
+        </div>
+        
         <!-- Reference Context Modal -->
         <div id="reference-modal" class="modal-overlay">
             <div class="modal">
@@ -3611,7 +4071,7 @@ const htmlTemplate = `<!DOCTYPE html>
                 
                 if (welcomeManageModels) {
                     welcomeManageModels.addEventListener('click', function() {
-                        showTemporaryMessage('To manage models, use: ollama pull <model-name> or ollama list to see installed models');
+                        openModelManagementModal();
                     });
                 }
                 
@@ -4879,6 +5339,260 @@ const htmlTemplate = `<!DOCTYPE html>
                 loadSessionList(); // Refresh the session list
             }
         }
+        
+        // Model Management Functions
+        
+        // Open model management modal
+        function openModelManagementModal() {
+            console.log('Opening model management modal');
+            const modelModal = document.getElementById('model-management-modal');
+            if (modelModal) {
+                console.log('Modal found, showing it');
+                modelModal.style.display = 'flex';
+                loadModelCategories();
+                loadInstalledModels();
+            } else {
+                console.error('Model management modal not found');
+            }
+        }
+        
+        // Get model categories function (global scope)
+        function getModelCategories() {
+            return {
+                '8gb': {
+                    title: '8GB RAM - Lightweight Models',
+                    description: 'Efficient models that run smoothly on 8GB RAM systems',
+                    models: [
+                        { name: 'llama3.2:1b', size: '637MB', description: 'Ultra-fast, minimal resource usage, great for quick tasks' },
+                        { name: 'phi3:mini', size: '1.6GB', description: 'Microsoft efficient model, excellent for general use' },
+                        { name: 'gemma2:2b', size: '1.4GB', description: 'Google lightweight model, good for text generation' },
+                        { name: 'qwen2.5:1.5b', size: '934MB', description: 'Alibaba efficient multilingual model' },
+                        { name: 'tinyllama:1.1b', size: '637MB', description: 'Ultra-compact model for basic tasks' },
+                        { name: 'stablelm2:1.6b', size: '1.0GB', description: 'Stability AI compact language model' },
+                        { name: 'orca-mini:3b', size: '1.9GB', description: 'Microsoft instruction-tuned compact model' },
+                        { name: 'phi3:3.8b', size: '2.2GB', description: 'Microsoft balanced efficiency model' }
+                    ]
+                },
+                '16gb': {
+                    title: '16GB RAM - Balanced Models',
+                    description: 'More capable models that require 16GB RAM for optimal performance',
+                    models: [
+                        { name: 'llama3.2:3b', size: '2.0GB', description: 'Meta latest compact model with strong performance' },
+                        { name: 'mistral:7b', size: '4.1GB', description: 'Mistral AI flagship model, excellent for most tasks' },
+                        { name: 'qwen2.5:7b', size: '4.4GB', description: 'Alibaba powerful multilingual model' },
+                        { name: 'gemma2:9b', size: '5.4GB', description: 'Google capable model with strong reasoning' },
+                        { name: 'llama3.1:8b', size: '4.7GB', description: 'Meta powerful general-purpose model' },
+                        { name: 'codellama:7b', size: '3.8GB', description: 'Meta specialized coding model' },
+                        { name: 'neural-chat:7b', size: '4.1GB', description: 'Intel conversational AI model' },
+                        { name: 'zephyr:7b', size: '4.1GB', description: 'HuggingFace instruction-tuned model' },
+                        { name: 'openchat:7b', size: '4.1GB', description: 'Open-source conversational model' },
+                        { name: 'dolphin-mistral:7b', size: '4.1GB', description: 'Uncensored fine-tune of Mistral' }
+                    ]
+                },
+                '32gb': {
+                    title: '32GB RAM - Advanced Models',
+                    description: 'High-performance models that need 32GB+ RAM for best results',
+                    models: [
+                        { name: 'llama3.1:8b', size: '4.7GB', description: 'Meta enhanced 8B parameter model' },
+                        { name: 'codellama:13b', size: '7.3GB', description: 'Enhanced coding model with better capabilities' },
+                        { name: 'llama3.1:70b', size: '39GB', description: 'Meta largest and most capable model' },
+                        { name: 'qwen2.5:14b', size: '8.2GB', description: 'Alibaba large multilingual model' },
+                        { name: 'qwen2.5:32b', size: '18GB', description: 'Alibaba most capable model' },
+                        { name: 'mixtral:8x7b', size: '26GB', description: 'Mistral mixture of experts model' },
+                        { name: 'codellama:34b', size: '19GB', description: 'Largest coding model for complex tasks' },
+                        { name: 'nous-hermes2:34b', size: '19GB', description: 'NousResearch large instruction model' },
+                        { name: 'wizardlm2:8x22b', size: '78GB', description: 'Microsoft mixture of experts model' },
+                        { name: 'deepseek-coder:33b', size: '18GB', description: 'Specialized large coding model' },
+                        { name: 'phind-codellama:34b', size: '19GB', description: 'Phind enhanced coding assistant' },
+                        { name: 'solar:10.7b', size: '6.1GB', description: 'Upstage high-performance model' }
+                    ]
+                }
+            };
+        }
+        
+        // Load model categories
+        function loadModelCategories() {
+            const modelCategoriesContainer = document.getElementById('model-categories');
+            const ramSelector = document.getElementById('ram-selector');
+            
+            if (!modelCategoriesContainer || !ramSelector) {
+                console.error('Model categories container or RAM selector not found');
+                return;
+            }
+            
+            // Initially show instruction message
+            modelCategoriesContainer.innerHTML = '<div class="system-message">Please select a RAM category above to view recommended models.</div>';
+            
+            // Add event listener for RAM selector
+            ramSelector.addEventListener('change', function() {
+                const selectedRam = this.value;
+                if (!selectedRam) {
+                    modelCategoriesContainer.innerHTML = '<div class="system-message">Please select a RAM category above to view recommended models.</div>';
+                    return;
+                }
+                
+                const categories = getModelCategories();
+                const category = categories[selectedRam];
+                
+                if (!category) {
+                    modelCategoriesContainer.innerHTML = '<div class="system-message">Category not found.</div>';
+                    return;
+                }
+                
+                console.log('Loading models for RAM category:', selectedRam);
+                
+                const ramClass = 'ram-' + selectedRam;
+                let html = '';
+                
+                html += '<div class="model-category">';
+                html += '<h5>';
+                html += '<span class="ram-badge ' + ramClass + '">' + selectedRam.toUpperCase() + '</span>';
+                html += category.title;
+                html += '</h5>';
+                html += '<div class="model-category-description">' + category.description + '</div>';
+                html += '<div class="recommendations-list">';
+                
+                category.models.forEach(model => {
+                    html += '<div class="model-item">';
+                    html += '<div class="model-header">';
+                    html += '<div class="model-info">';
+                    html += '<h5 class="model-name">' + model.name + '</h5>';
+                    html += '<div class="model-size">Size: ' + model.size + '</div>';
+                    html += '</div>';
+                    html += '</div>';
+                    html += '<div class="model-description">' + model.description + '</div>';
+                    html += '<div class="install-command">';
+                    html += 'ollama pull ' + model.name;
+                    html += '<button class="copy-command-btn" onclick="copyToClipboard(&quot;ollama pull ' + model.name + '&quot;)">Copy</button>';
+                    html += '</div>';
+                    html += '</div>';
+                });
+                
+                html += '</div>';
+                html += '</div>';
+                
+                console.log('Generated HTML for category:', selectedRam);
+                modelCategoriesContainer.innerHTML = html;
+            });
+        }
+        
+        // Load installed models
+        async function loadInstalledModels() {
+            const installedModelsList = document.getElementById('installed-models-list');
+            
+            try {
+                const response = await fetch('/api/models');
+                if (response.ok) {
+                    const data = await response.json();
+                    const models = data.models || [];
+                    
+                    if (models.length === 0) {
+                        installedModelsList.innerHTML = \`
+                            <div style="text-align: center; padding: 2rem; color: var(--light-text);">
+                                <p>No models installed yet.</p>
+                                <p>Use the recommendations above to install your first model.</p>
+                            </div>
+                        \`;
+                        return;
+                    }
+                    
+                    let html = '';
+                    models.forEach(model => {
+                        const isSelected = model.name === selectedModel;
+                        html += \`
+                            <div class="model-item installed">
+                                <div class="model-header">
+                                    <div class="model-info">
+                                        <h5 class="model-name">\${model.name}</h5>
+                                        <div class="model-size">Size: \${formatModelSize(model.size)}</div>
+                                    </div>
+                                    <div class="model-badges">
+                                        <span class="model-badge installed">Installed</span>
+                                        \${isSelected ? '<span class="model-badge optimal">Current</span>' : ''}
+                                    </div>
+                                </div>
+                                <div class="model-actions">
+                                    \${!isSelected ? \`<button class="btn btn-primary" onclick="selectModel('\${model.name}')">Select</button>\` : ''}
+                                    <button class="btn btn-secondary" onclick="copyToClipboard('ollama rm \${model.name}')">Copy Remove Command</button>
+                                </div>
+                            </div>
+                        \`;
+                    });
+                    
+                    installedModelsList.innerHTML = html;
+                } else {
+                    installedModelsList.innerHTML = \`
+                        <div style="text-align: center; padding: 2rem; color: var(--light-text);">
+                            <p>Failed to load installed models.</p>
+                            <p>Make sure Ollama is running.</p>
+                        </div>
+                    \`;
+                }
+            } catch (error) {
+                console.error('Error loading installed models:', error);
+                installedModelsList.innerHTML = \`
+                    <div style="text-align: center; padding: 2rem; color: var(--light-text);">
+                        <p>Error loading models.</p>
+                        <p>Please check your connection to Ollama.</p>
+                    </div>
+                \`;
+            }
+        }
+        
+        // Copy text to clipboard
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showTemporaryMessage('Command copied to clipboard!');
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+                showTemporaryMessage('Failed to copy command');
+            });
+        }
+        
+        // Select a model
+        function selectModel(modelName) {
+            modelSelector.value = modelName;
+            modelSelector.dispatchEvent(new Event('change'));
+            showTemporaryMessage(\`Switched to model: \${modelName}\`);
+            loadInstalledModels(); // Refresh to update current model badge
+        }
+        
+        // Add event listeners for model management modal
+        setTimeout(() => {
+            const modelModal = document.getElementById('model-management-modal');
+            const modelModalClose = document.getElementById('model-modal-close');
+            const modelModalCloseBtn = document.getElementById('model-modal-close-btn');
+            const refreshModelsBtn = document.getElementById('refresh-models-btn');
+            
+            if (modelModalClose) {
+                modelModalClose.addEventListener('click', function() {
+                    modelModal.style.display = 'none';
+                });
+            }
+            
+            if (modelModalCloseBtn) {
+                modelModalCloseBtn.addEventListener('click', function() {
+                    modelModal.style.display = 'none';
+                });
+            }
+            
+            if (refreshModelsBtn) {
+                refreshModelsBtn.addEventListener('click', function() {
+                    loadInstalledModels();
+                    loadAvailableModels(); // Refresh the main model selector too
+                    showTemporaryMessage('Models refreshed');
+                });
+            }
+            
+            // Close modal when clicking outside
+            if (modelModal) {
+                modelModal.addEventListener('click', function(e) {
+                    if (e.target === modelModal) {
+                        modelModal.style.display = 'none';
+                    }
+                });
+            }
+        }, 100);
         
         // Check connection status every 30 seconds
         setInterval(checkConnectionStatus, 30000);
